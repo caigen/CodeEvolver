@@ -56,3 +56,6 @@ Only When the overall direction is finished or Human click the stop button.
 
 ## Detail Arch
 For AI Agent, use Github Copilot CLI and wrap it for process work from logic.
+
+## Language Prefer
+.NET, Javascript JS, Cansandra QL and others only when necessary.
