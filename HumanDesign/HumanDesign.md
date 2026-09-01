@@ -1,3 +1,5 @@
+** If you are AI, don't change this file **
+
 # Code Evolver
 
 An autonomous AI worker that continuously develops and improves your repository with your direction.
