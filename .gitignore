@@ -398,6 +398,10 @@ MSBuild_Logs/
 # BeatPulse healthcheck temp database
 healthchecksdb
 
+# Code Evolver runtime data and frontend output
+src/CodeEvolver.Api/data/
+src/code-evolver-web/dist/
+
 # Backup folder for Package Reference Convert tool in Visual Studio 2017
 MigrationBackup/
 
