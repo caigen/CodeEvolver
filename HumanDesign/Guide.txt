@@ -1,0 +1,2 @@
+Agent should not change this folder as this folder is used for Human Write ONLY.
+Agent can generate one other Design folder and use it.
