@@ -1,0 +1,6 @@
+@CodeEvolver.Api_HostAddress = http://localhost:5278
+
+GET {{CodeEvolver.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

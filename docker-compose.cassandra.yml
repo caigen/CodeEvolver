@@ -1,0 +1,20 @@
+services:
+  cassandra:
+    image: cassandra:5.0
+    container_name: code-evolver-cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: CodeEvolver
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: [ "CMD-SHELL", "cqlsh -e 'DESCRIBE CLUSTER'" ]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+
+volumes:
+  cassandra-data:

@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CodeEvolver.Api/CodeEvolver.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CodeEvolver.Api.Tests/CodeEvolver.Api.Tests.csproj" />
+  </Folder>
+</Solution>
