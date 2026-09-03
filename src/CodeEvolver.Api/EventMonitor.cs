@@ -16,10 +16,33 @@ public sealed class EventMonitor(IEvolutionStore store, IAgentRunner agentRunner
     {
         try
         {
+            currentEvent.Prompt = agentRunner.GetPrompt(evolution, currentEvent.Type);
+            currentEvent.Logs.Add($"{DateTimeOffset.UtcNow:O} Dispatching {currentEvent.Type}.");
+            await store.SaveAsync(evolution, cancellationToken);
             var result = await agentRunner.RunAsync(evolution, currentEvent.Type, cancellationToken);
             currentEvent.Status = EvolutionEventStatus.Completed;
             currentEvent.Detail = result.Detail;
+            currentEvent.Logs.AddRange(result.Logs);
+            currentEvent.Logs.Add($"{DateTimeOffset.UtcNow:O} Completed {currentEvent.Type}.");
             currentEvent.CompletedAt = DateTimeOffset.UtcNow;
+            var latest = await store.GetAsync(evolution.Id, cancellationToken);
+            if (latest?.Status == EvolutionStatus.StopRequested)
+            {
+                var eventLogs = currentEvent.Logs.ToArray();
+                var persistedEvent = latest.Events.Single(entry => entry.Id == currentEvent.Id);
+                persistedEvent.Status = currentEvent.Status;
+                persistedEvent.Detail = currentEvent.Detail;
+                persistedEvent.Prompt = currentEvent.Prompt;
+                persistedEvent.Logs.Clear();
+                persistedEvent.Logs.AddRange(eventLogs);
+                persistedEvent.StartedAt = currentEvent.StartedAt;
+                persistedEvent.CompletedAt = currentEvent.CompletedAt;
+                latest.Status = EvolutionStatus.Stopped;
+                latest.CompletedAt = DateTimeOffset.UtcNow;
+                latest.Events.Add(EvolutionCoordinator.CompletedEvent(EvolutionEventTypes.EvolutionStopped));
+                await store.SaveAsync(latest, cancellationToken);
+                return;
+            }
             foreach (var workItem in result.WorkItems.Take(5)) evolution.WorkItems.Add(workItem);
             foreach (var eventType in NextEvents(currentEvent.Type))
                 evolution.Events.Add(eventType.EndsWith(".completed", StringComparison.Ordinal)
@@ -29,6 +52,7 @@ public sealed class EventMonitor(IEvolutionStore store, IAgentRunner agentRunner
             {
                 evolution.Status = EvolutionStatus.Completed;
                 evolution.Summary = result.Detail;
+                evolution.CompletedAt = DateTimeOffset.UtcNow;
             }
             await store.SaveAsync(evolution, cancellationToken);
         }
@@ -37,9 +61,11 @@ public sealed class EventMonitor(IEvolutionStore store, IAgentRunner agentRunner
             logger.LogError(exception, "Event {EventType} failed for evolution {EvolutionId}", currentEvent.Type, evolution.Id);
             currentEvent.Status = EvolutionEventStatus.Failed;
             currentEvent.Detail = exception.Message;
+            currentEvent.Logs.Add($"{DateTimeOffset.UtcNow:O} Failed: {exception.Message}");
             currentEvent.CompletedAt = DateTimeOffset.UtcNow;
             evolution.Status = EvolutionStatus.Failed;
             evolution.Error = exception.Message;
+            evolution.CompletedAt = DateTimeOffset.UtcNow;
             await store.SaveAsync(evolution, cancellationToken);
         }
     }
@@ -55,11 +81,18 @@ public sealed class EventMonitor(IEvolutionStore store, IAgentRunner agentRunner
     };
 }
 
-public sealed record AgentResult(string Detail, IReadOnlyList<WorkItem> WorkItems);
-public interface IAgentRunner { Task<AgentResult> RunAsync(Evolution evolution, string eventType, CancellationToken cancellationToken); }
+public sealed record AgentResult(string Detail, IReadOnlyList<WorkItem> WorkItems, IReadOnlyList<string> Logs);
+public interface IAgentRunner
+{
+    string GetPrompt(Evolution evolution, string eventType);
+    Task<AgentResult> RunAsync(Evolution evolution, string eventType, CancellationToken cancellationToken);
+}
 
 public sealed class LocalAgentRunner : IAgentRunner
 {
+    public string GetPrompt(Evolution evolution, string eventType) =>
+        $"Local simulation for {eventType}: {evolution.Direction} (scope: {evolution.Scope}).";
+
     public Task<AgentResult> RunAsync(Evolution evolution, string eventType, CancellationToken cancellationToken)
     {
         IReadOnlyList<WorkItem> workItems = eventType == EvolutionEventTypes.PlanStarted
@@ -75,6 +108,6 @@ public sealed class LocalAgentRunner : IAgentRunner
             EvolutionEventTypes.ChangeMerged => $"Change is ready for branch '{evolution.TargetBranch}'.",
             _ => $"Processed {eventType}."
         };
-        return Task.FromResult(new AgentResult(detail, workItems));
+        return Task.FromResult(new AgentResult(detail, workItems, [$"Local agent: {detail}"]));
     }
 }

@@ -23,15 +23,17 @@ public static class EvolutionEventTypes
 public sealed class Evolution
 {
     public Guid Id { get; init; } = Guid.NewGuid();
-    public required string RepositoryPath { get; init; }
-    public required string Direction { get; init; }
-    public required string Scope { get; init; }
-    public required string TargetBranch { get; init; }
+    public required string RepositoryPath { get; set; }
+    public required string Direction { get; set; }
+    public required string Scope { get; set; }
+    public required string TargetBranch { get; set; }
     public EvolutionStatus Status { get; set; } = EvolutionStatus.Draft;
     public string? Summary { get; set; }
     public string? Error { get; set; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? StartedAt { get; set; }
+    public DateTimeOffset? CompletedAt { get; set; }
     public List<WorkItem> WorkItems { get; init; } = [];
     public List<EvolutionEvent> Events { get; init; } = [];
 }
@@ -51,7 +53,10 @@ public sealed class EvolutionEvent
     public required string Type { get; init; }
     public EvolutionEventStatus Status { get; set; } = EvolutionEventStatus.Pending;
     public string? Detail { get; set; }
+    public string? Prompt { get; set; }
+    public List<string> Logs { get; init; } = [];
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? StartedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
 }
 
@@ -64,6 +69,14 @@ public sealed record CreateEvolutionRequest(string RepositoryPath, string Direct
         AddRequired(errors, nameof(Direction), Direction);
         AddRequired(errors, nameof(Scope), Scope);
         AddRequired(errors, nameof(TargetBranch), TargetBranch);
+        if (!errors.ContainsKey(nameof(RepositoryPath)))
+        {
+            var repositoryPath = Path.GetFullPath(RepositoryPath.Trim());
+            if (!Directory.Exists(repositoryPath))
+                errors[nameof(RepositoryPath)] = ["RepositoryPath must be an existing directory."];
+            else if (!Directory.Exists(Path.Combine(repositoryPath, ".git")) && !File.Exists(Path.Combine(repositoryPath, ".git")))
+                errors[nameof(RepositoryPath)] = ["RepositoryPath must be the root of a Git repository."];
+        }
         return errors;
     }
 

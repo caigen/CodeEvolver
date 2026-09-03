@@ -49,6 +49,15 @@ public sealed class CassandraEvolutionStore : IEvolutionStore, IAsyncDisposable
         return evolution;
     }
 
+    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var session = await sessionTask.WaitAsync(cancellationToken);
+        if (await GetAsync(id, cancellationToken) is null) return false;
+        var statement = await session.PrepareAsync("DELETE FROM evolutions WHERE id = ?");
+        await session.ExecuteAsync(statement.Bind(id));
+        return true;
+    }
+
     public async Task<(Evolution Evolution, EvolutionEvent Event)?> ClaimNextEventAsync(CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken);
@@ -59,6 +68,7 @@ public sealed class CassandraEvolutionStore : IEvolutionStore, IAsyncDisposable
             var evolutionEvent = evolution?.Events.FirstOrDefault(entry => entry.Status == EvolutionEventStatus.Pending);
             if (evolution is null || evolutionEvent is null) return null;
             evolutionEvent.Status = EvolutionEventStatus.Processing;
+            evolutionEvent.StartedAt = DateTimeOffset.UtcNow;
             await SaveAsync(evolution, cancellationToken);
             return (evolution, evolutionEvent);
         }

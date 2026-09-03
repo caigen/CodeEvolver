@@ -8,6 +8,7 @@ public interface IEvolutionStore
     Task<IReadOnlyList<Evolution>> ListAsync(CancellationToken cancellationToken);
     Task<Evolution?> GetAsync(Guid id, CancellationToken cancellationToken);
     Task<Evolution> SaveAsync(Evolution evolution, CancellationToken cancellationToken);
+    Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken);
     Task<(Evolution Evolution, EvolutionEvent Event)?> ClaimNextEventAsync(CancellationToken cancellationToken);
 }
 
@@ -50,6 +51,19 @@ public sealed class JsonEvolutionStore(IWebHostEnvironment environment) : IEvolu
         finally { gate.Release(); }
     }
 
+    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var evolutions = await ReadUnsafeAsync(cancellationToken);
+            var removed = evolutions.RemoveAll(item => item.Id == id) > 0;
+            if (removed) await WriteUnsafeAsync(evolutions, cancellationToken);
+            return removed;
+        }
+        finally { gate.Release(); }
+    }
+
     public async Task<(Evolution Evolution, EvolutionEvent Event)?> ClaimNextEventAsync(CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken);
@@ -60,6 +74,7 @@ public sealed class JsonEvolutionStore(IWebHostEnvironment environment) : IEvolu
             var evolutionEvent = evolution?.Events.FirstOrDefault(entry => entry.Status == EvolutionEventStatus.Pending);
             if (evolution is null || evolutionEvent is null) return null;
             evolutionEvent.Status = EvolutionEventStatus.Processing;
+            evolutionEvent.StartedAt = DateTimeOffset.UtcNow;
             evolution.UpdatedAt = DateTimeOffset.UtcNow;
             await WriteUnsafeAsync(evolutions, cancellationToken);
             return (evolution, evolutionEvent);

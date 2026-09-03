@@ -5,6 +5,8 @@ namespace CodeEvolver.Api;
 
 public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<CopilotAgentRunner> logger) : IAgentRunner
 {
+    public string GetPrompt(Evolution evolution, string eventType) => BuildPrompt(evolution, eventType);
+
     public async Task<AgentResult> RunAsync(Evolution evolution, string eventType, CancellationToken cancellationToken)
     {
         if (!Directory.Exists(evolution.RepositoryPath))
@@ -42,7 +44,11 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
             throw new InvalidOperationException($"Copilot CLI failed ({process.ExitCode}): {error}");
         if (!string.IsNullOrEmpty(error)) logger.LogWarning("Copilot CLI: {Error}", error);
 
-        return new AgentResult(string.IsNullOrWhiteSpace(output) ? $"Copilot completed {eventType}." : output, []);
+        var detail = string.IsNullOrWhiteSpace(output) ? $"Copilot completed {eventType}." : output;
+        var logs = new List<string>();
+        if (!string.IsNullOrWhiteSpace(output)) logs.Add(output);
+        if (!string.IsNullOrWhiteSpace(error)) logs.Add($"stderr: {error}");
+        return new AgentResult(detail, [], logs);
     }
 
     private static string BuildPrompt(Evolution evolution, string eventType)
