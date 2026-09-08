@@ -24,7 +24,7 @@ type Evolution = {
 }
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:5278/api'
-const emptyForm = { repositoryPath: '', direction: 'Improve API perf and test coverage', scope: '.', targetBranch: 'main' }
+const emptyForm = { repositoryPath: '', direction: 'Improve e2e user experience & design and fix functionality issues.', scope: '.', targetBranch: 'main' }
 
 const readError = async (response: Response, fallback: string) => {
   const body = await response.json().catch(() => undefined)
@@ -38,6 +38,12 @@ const formatDuration = (start?: string, end?: string, now = Date.now()) => {
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
   return `${hours > 0 ? `${hours}:` : ''}${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+const formatHeartbeat = (start?: string, now = Date.now()) => {
+  if (!start) return '00:00'
+  const seconds = Math.max(0, Math.floor((now - new Date(start).getTime()) / 5000) * 5)
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
 }
 
 const formatTimestamp = (value?: string) => value ? new Date(value).toLocaleString() : 'Not recorded'
@@ -193,7 +199,7 @@ function App() {
               </div>
             </div>
 
-            {isActive && <div className="active-work"><span className="pulse" /><div><small>{selected.status === 'stopRequested' ? 'Stopping after current event' : 'Working now'}</small><strong>{activeEvent?.type.replaceAll('.', ' ') ?? 'Preparing next event'}</strong><p>{activeEvent?.prompt ?? 'Waiting for the next persisted event.'}</p></div><div className="running-time"><Timer size={16} />{formatDuration(selected.startedAt, undefined, now)}</div></div>}
+            {isActive && <div className="active-work"><span className="pulse" /><div><small>{selected.status === 'stopRequested' ? 'Stopping after current event' : `Still working · ${formatHeartbeat(activeEvent?.startedAt, now)} in this step`}</small><strong>{activeEvent?.type.replaceAll('.', ' ') ?? 'Preparing next event'}</strong><p>{activeEvent?.prompt ?? 'Waiting for the next persisted event.'}</p></div><div className="running-time"><Timer size={16} />{formatDuration(selected.startedAt, undefined, now)}</div></div>}
 
             <div className="metrics">
               <div><span>Target</span><strong><GitBranch size={16} />{selected.targetBranch}</strong></div>
@@ -211,7 +217,7 @@ function App() {
               <section className="panel timeline-panel">
                 <div className="section-title"><Clock3 size={17} /><h3>Event timeline</h3></div>
                 <div className="timeline">
-                  {[...selected.events].reverse().map((item) => <div className={`event ${item.status}`} key={item.id}><span className="event-icon">{item.status === 'completed' ? <Check size={13} /> : item.status === 'failed' ? <XCircle size={13} /> : <Clock3 size={13} />}</span><details><summary><strong>{item.type.replaceAll('.', ' ')}</strong><small>{item.status} · {formatTimestamp(item.startedAt ?? item.createdAt)}</small></summary><div className="event-detail"><dl><div><dt>Created</dt><dd>{formatTimestamp(item.createdAt)}</dd></div><div><dt>Started</dt><dd>{formatTimestamp(item.startedAt)}</dd></div><div><dt>Completed</dt><dd>{formatTimestamp(item.completedAt)}</dd></div></dl>{item.prompt && <><h4>GitHub Copilot prompt</h4><pre>{item.prompt}</pre></>}{item.logs.length > 0 && <><h4>Logs</h4><pre>{item.logs.join('\n\n')}</pre></>}{item.detail && <><h4>Result</h4><pre>{item.detail}</pre></>}</div></details></div>)}
+                  {[...selected.events].reverse().map((item) => <div className={`event ${item.status}`} key={item.id}><span className="event-icon">{item.status === 'completed' ? <Check size={13} /> : item.status === 'failed' ? <XCircle size={13} /> : <Clock3 size={13} />}</span><details open><summary><strong>{item.type.replaceAll('.', ' ')}</strong><small>{item.status} · {formatTimestamp(item.startedAt ?? item.createdAt)}</small></summary><div className="event-detail"><dl><div><dt>Created</dt><dd>{formatTimestamp(item.createdAt)}</dd></div><div><dt>Started</dt><dd>{formatTimestamp(item.startedAt)}</dd></div><div><dt>Completed</dt><dd>{formatTimestamp(item.completedAt)}</dd></div></dl>{item.prompt && <><h4>GitHub Copilot prompt</h4><pre>{item.prompt}</pre></>}{item.logs.length > 0 && <><h4>Logs</h4><pre>{item.logs.join('\n\n')}</pre></>}{item.detail && <><h4>Result</h4><pre>{item.detail}</pre></>}</div></details></div>)}
                 </div>
               </section>
             </div>
