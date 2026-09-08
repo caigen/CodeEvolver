@@ -24,7 +24,7 @@ type Evolution = {
 }
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:5278/api'
-const emptyForm = { repositoryPath: '', direction: '', scope: '.', targetBranch: 'main' }
+const emptyForm = { repositoryPath: '', direction: 'Improve API perf and test coverage', scope: '.', targetBranch: 'main' }
 
 const readError = async (response: Response, fallback: string) => {
   const body = await response.json().catch(() => undefined)
