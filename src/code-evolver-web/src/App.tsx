@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Activity, ArrowRight, Check, CircleStop, Clock3, FilePenLine, GitBranch, Play, Plus, RefreshCw, Save, Server, Timer, Trash2, X, XCircle } from 'lucide-react'
+import { Activity, ArrowRight, Bot, Check, CircleStop, Clock3, FilePenLine, GitBranch, Play, Plus, RefreshCw, Save, Server, Timer, Trash2, X, XCircle } from 'lucide-react'
 import './App.css'
 
 type EvolutionStatus = 'draft' | 'running' | 'stopRequested' | 'stopped' | 'completed' | 'failed'
 type EventStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
 type WorkItem = { id: string; title: string; description: string; status: string; result?: string }
 type EvolutionEvent = { id: string; type: string; status: EventStatus; detail?: string; prompt?: string; logs: string[]; createdAt: string; startedAt?: string; completedAt?: string }
+type AgentState = 'working' | 'done' | 'queued' | 'waiting' | 'stopped' | 'failed'
+type AgentMember = { name: string; startEvent: string; completedEvent: string }
 type Evolution = {
   id: string
   repositoryPath: string
@@ -25,6 +27,25 @@ type Evolution = {
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:5278/api'
 const emptyForm = { repositoryPath: '', direction: 'Improve e2e user experience & design and fix functionality issues.', scope: '.', targetBranch: 'main' }
+const agentMembers: AgentMember[] = [
+  { name: 'Scan agent', startEvent: 'scan.started', completedEvent: 'scan.completed' },
+  { name: 'Plan agent', startEvent: 'plan.started', completedEvent: 'plan.completed' },
+  { name: 'Worker agent', startEvent: 'work-item.started', completedEvent: 'work-item.completed' },
+  { name: 'Reviewer agent', startEvent: 'review.started', completedEvent: 'review.completed' },
+  { name: 'Gate agent', startEvent: 'gate.started', completedEvent: 'gate.completed' },
+  { name: 'Merge agent', startEvent: 'change.merged', completedEvent: 'change.merged' },
+]
+
+const getAgentState = (events: EvolutionEvent[], member: AgentMember): { state: AgentState; eventType: string } => {
+  const started = events.find((event) => event.type === member.startEvent)
+  const completed = events.find((event) => event.type === member.completedEvent && event.status === 'completed')
+  if (started?.status === 'processing') return { state: 'working', eventType: started.type }
+  if (started?.status === 'failed') return { state: 'failed', eventType: started.type }
+  if (started?.status === 'cancelled') return { state: 'stopped', eventType: started.type }
+  if (completed || started?.status === 'completed') return { state: 'done', eventType: completed?.type ?? started?.type ?? member.completedEvent }
+  if (started?.status === 'pending') return { state: 'queued', eventType: started.type }
+  return { state: 'waiting', eventType: member.startEvent }
+}
 
 const readError = async (response: Response, fallback: string) => {
   const body = await response.json().catch(() => undefined)
@@ -211,6 +232,15 @@ function App() {
             {selected.error && <div className="error-banner inline"><XCircle size={18} />{selected.error}</div>}
             <div className="content-grid">
               <section className="panel">
+                <div className="agent-roster">
+                  <div className="roster-title"><Bot size={17} /><h3>Agent team</h3></div>
+                  <div className="roster-grid">
+                    {agentMembers.map((member) => {
+                      const agent = getAgentState(selected.events, member)
+                      return <div className={`agent-member ${agent.state}`} key={member.startEvent}><span className="agent-status" /><div><strong>{member.name}</strong><small>{agent.eventType.replaceAll('.', ' ')} · {agent.state}</small></div></div>
+                    })}
+                  </div>
+                </div>
                 <div className="section-title"><Check size={17} /><h3>Agent day plan</h3></div>
                 {selected.workItems.length === 0 ? <p className="empty">Plan appears after the scan completes.</p> : selected.workItems.map((item, index) => <div className="work-item" key={item.id}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.status}</small><p>{item.description}</p>{item.result && <pre>{item.result}</pre>}</div></div>)}
               </section>
