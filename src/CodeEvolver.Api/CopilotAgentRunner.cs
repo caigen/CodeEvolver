@@ -30,8 +30,12 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
         startInfo.ArgumentList.Add("--silent");
         startInfo.ArgumentList.Add("--stream");
         startInfo.ArgumentList.Add("off");
-        startInfo.ArgumentList.Add("--max-ai-credits");
-        startInfo.ArgumentList.Add(configuration["Agent:Copilot:MaxAiCredits"] ?? "1");
+        var maxAiCredits = configuration["Agent:Copilot:MaxAiCredits"];
+        if (!string.IsNullOrWhiteSpace(maxAiCredits))
+        {
+            startInfo.ArgumentList.Add("--max-ai-credits");
+            startInfo.ArgumentList.Add(maxAiCredits);
+        }
 
         using var process = new Process { StartInfo = startInfo };
         process.Start();

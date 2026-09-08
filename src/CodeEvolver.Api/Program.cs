@@ -15,9 +15,9 @@ builder.Services.AddSingleton<IEvolutionStore>(services =>
         : ActivatorUtilities.CreateInstance<JsonEvolutionStore>(services));
 builder.Services.AddSingleton<EvolutionCoordinator>();
 builder.Services.AddSingleton<IAgentRunner>(services =>
-    builder.Configuration["Agent:Provider"]?.Equals("copilot", StringComparison.OrdinalIgnoreCase) == true
-        ? ActivatorUtilities.CreateInstance<CopilotAgentRunner>(services)
-        : new LocalAgentRunner());
+    builder.Configuration["Agent:Provider"]?.Equals("local", StringComparison.OrdinalIgnoreCase) == true
+        ? new LocalAgentRunner()
+        : ActivatorUtilities.CreateInstance<CopilotAgentRunner>(services));
 builder.Services.AddHostedService<EventMonitor>();
 
 var app = builder.Build();
@@ -33,7 +33,7 @@ app.MapGet("/api/health", (IConfiguration configuration) => Results.Ok(new
 {
     status = "healthy",
     storage = configuration["Storage:Provider"] ?? "json",
-    agent = configuration["Agent:Provider"] ?? "local"
+    agent = configuration["Agent:Provider"] ?? "copilot"
 }));
 app.MapGet("/api/repository", (IWebHostEnvironment environment) =>
 {

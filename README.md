@@ -11,18 +11,9 @@ dotnet run --project .\src\CodeEvolver.Api
 npm run dev --prefix .\src\code-evolver-web
 ```
 
-Open http://localhost:5173. Runtime state is stored in `src/CodeEvolver.Api/data/evolutions.json` by default. The default `local` agent simulates a complete lifecycle without changing the selected repository.
+Open http://localhost:5173. Runtime state is stored in `src/CodeEvolver.Api/data/evolutions.json` by default. Install and authenticate the standalone GitHub Copilot CLI before starting the API. Copilot is the default agent and runs non-interactively in the selected repository, where it can edit files and run commands. The final phase attempts a commit, push, and pull request; Git credentials and repository hosting access must already be configured. The UI's Stop action prevents pending phases from starting, but cannot interrupt a CLI phase already in progress.
 
-## Enable autonomous changes
-
-Install and authenticate the standalone GitHub Copilot CLI, then start the API with:
-
-```powershell
-$env:Agent__Provider = "copilot"
-dotnet run --project .\src\CodeEvolver.Api
-```
-
-Copilot runs non-interactively in the selected repository. It can edit files and run commands. The final phase attempts a commit, push, and pull request; Git credentials and repository hosting access must already be configured. The UI's Stop action prevents pending phases from starting, but cannot interrupt a CLI phase already in progress.
+For UI development without autonomous repository changes, set `Agent__Provider=local` to use the lifecycle simulator explicitly. Set `Agent__Copilot__MaxAiCredits` only when a per-phase credit limit is required.
 
 ## Use Cassandra
 
