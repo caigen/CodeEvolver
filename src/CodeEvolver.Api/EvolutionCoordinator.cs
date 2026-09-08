@@ -35,6 +35,15 @@ public sealed class EvolutionCoordinator(IEvolutionStore store)
     {
         var evolution = await store.GetAsync(id, cancellationToken);
         if (evolution is null || evolution.Status is EvolutionStatus.Running or EvolutionStatus.StopRequested or EvolutionStatus.Completed) return evolution;
+
+        if (evolution.Status is EvolutionStatus.Failed or EvolutionStatus.Stopped)
+        {
+            evolution.WorkItems.Clear();
+            evolution.Events.Clear();
+            evolution.Summary = null;
+            evolution.Error = null;
+        }
+
         evolution.Status = EvolutionStatus.Running;
         evolution.Error = null;
         evolution.StartedAt = DateTimeOffset.UtcNow;

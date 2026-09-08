@@ -61,6 +61,91 @@ public sealed class EvolutionLifecycleTests
     }
 
     [Fact]
+    public void AgentOutputParser_ReadsFinalResponseAndPlan()
+    {
+        const string output = """
+            {"type":"model.call_start","data":{}}
+            {"type":"assistant.message","data":{"content":"```json\n[{\"title\":\"Fix polling\",\"description\":\"Persist live agent progress.\"}]\n```"}}
+            """;
+
+        var response = AgentOutputParser.GetFinalResponse(output);
+        var workItems = AgentOutputParser.GetWorkItems(response!);
+
+        Assert.Single(workItems);
+        Assert.Equal("Fix polling", workItems[0].Title);
+        Assert.Equal("Persist live agent progress.", workItems[0].Description);
+        Assert.Equal("Agent is reasoning.", AgentOutputParser.GetProgress("{\"type\":\"model.call_start\",\"data\":{}}"));
+    }
+
+    [Fact]
+    public async Task EventMonitor_RunsEachPlannedWorkItemSeparately()
+    {
+        var store = new MemoryEvolutionStore();
+        var coordinator = new EvolutionCoordinator(store);
+        var evolution = await coordinator.CreateAsync(new CreateEvolutionRequest(".", "Improve tests", "tests", "main"), CancellationToken.None);
+        await coordinator.StartAsync(evolution.Id, CancellationToken.None);
+        var runner = new MultipleWorkItemRunner();
+        var monitor = new EventMonitor(store, runner, NullLogger<EventMonitor>.Instance);
+        while (await store.ClaimNextEventAsync(CancellationToken.None) is { } claimed)
+            await monitor.ProcessAsync(claimed.Evolution, claimed.Event, CancellationToken.None);
+
+        var completed = await store.GetAsync(evolution.Id, CancellationToken.None);
+        Assert.NotNull(completed);
+        Assert.Equal(2, runner.WorkerPrompts.Count);
+        Assert.Contains("First item", runner.WorkerPrompts[0]);
+        Assert.Contains("Second item", runner.WorkerPrompts[1]);
+        Assert.All(completed.WorkItems, item => Assert.Equal("completed", item.Status));
+        Assert.Equal(2, completed.Events.Count(item => item.Type == EvolutionEventTypes.WorkItemStarted));
+    }
+
+    [Fact]
+    public async Task EventMonitor_RecoversInterruptedProcessingEvent()
+    {
+        var store = new MemoryEvolutionStore();
+        var coordinator = new EvolutionCoordinator(store);
+        var evolution = await coordinator.CreateAsync(new CreateEvolutionRequest(".", "Improve tests", "tests", "main"), CancellationToken.None);
+        await coordinator.StartAsync(evolution.Id, CancellationToken.None);
+        var claimed = await store.ClaimNextEventAsync(CancellationToken.None);
+        Assert.NotNull(claimed);
+        var monitor = new EventMonitor(store, new LocalAgentRunner(), NullLogger<EventMonitor>.Instance);
+
+        await monitor.RecoverInterruptedEventsAsync(CancellationToken.None);
+
+        var recovered = await store.GetAsync(evolution.Id, CancellationToken.None);
+        Assert.NotNull(recovered);
+        Assert.Equal(EvolutionStatus.Failed, recovered.Status);
+        Assert.Contains("interrupted", recovered.Error);
+        Assert.Equal(EvolutionEventStatus.Failed, recovered.Events.Single(item => item.Id == claimed.Value.Event.Id).Status);
+    }
+
+    [Fact]
+    public async Task Start_RestartsStoppedEvolutionFromCleanState()
+    {
+        var store = new MemoryEvolutionStore();
+        var coordinator = new EvolutionCoordinator(store);
+        var evolution = await coordinator.CreateAsync(new CreateEvolutionRequest(".", "Improve tests", "tests", "main"), CancellationToken.None);
+
+        await coordinator.StartAsync(evolution.Id, CancellationToken.None);
+        evolution = await store.GetAsync(evolution.Id, CancellationToken.None)!;
+        evolution!.Status = EvolutionStatus.Stopped;
+        evolution.Summary = "Old summary";
+        evolution.Error = "Old error";
+        evolution.WorkItems.Add(new WorkItem { Title = "Stale item", Description = "Should be cleared" });
+        evolution.Events.Add(new EvolutionEvent { Type = EvolutionEventTypes.ScanCompleted, Status = EvolutionEventStatus.Completed });
+        await store.SaveAsync(evolution, CancellationToken.None);
+
+        var restarted = await coordinator.StartAsync(evolution.Id, CancellationToken.None);
+
+        Assert.NotNull(restarted);
+        Assert.Equal(EvolutionStatus.Running, restarted.Status);
+        Assert.Empty(restarted.WorkItems);
+        Assert.Null(restarted.Summary);
+        Assert.Null(restarted.Error);
+        Assert.DoesNotContain(restarted.Events, entry => entry.Type == EvolutionEventTypes.ScanCompleted);
+        Assert.Contains(restarted.Events, entry => entry.Type == EvolutionEventTypes.ScanStarted);
+    }
+
+    [Fact]
     public async Task Stop_CancelsPendingWork()
     {
         var store = new MemoryEvolutionStore();
@@ -126,6 +211,27 @@ public sealed class EvolutionLifecycleTests
             evolutionEvent.Status = EvolutionEventStatus.Processing;
             evolutionEvent.StartedAt = DateTimeOffset.UtcNow;
             return Task.FromResult<(Evolution, EvolutionEvent)?>((evolution, evolutionEvent));
+        }
+    }
+
+    private sealed class MultipleWorkItemRunner : IAgentRunner
+    {
+        public List<string> WorkerPrompts { get; } = [];
+
+        public string GetPrompt(Evolution evolution, string eventType)
+        {
+            if (eventType != EvolutionEventTypes.WorkItemStarted) return eventType;
+            var title = evolution.WorkItems.First(item => item.Status == "working").Title;
+            WorkerPrompts.Add(title);
+            return title;
+        }
+
+        public Task<AgentResult> RunAsync(Evolution evolution, string eventType, Func<string, CancellationToken, Task>? reportProgress, CancellationToken cancellationToken)
+        {
+            IReadOnlyList<WorkItem> workItems = eventType == EvolutionEventTypes.PlanStarted
+                ? [new WorkItem { Title = "First item", Description = "First" }, new WorkItem { Title = "Second item", Description = "Second" }]
+                : [];
+            return Task.FromResult(new AgentResult(eventType, workItems, []));
         }
     }
 }

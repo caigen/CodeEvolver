@@ -37,13 +37,13 @@ const agentMembers: AgentMember[] = [
 ]
 
 const getAgentState = (events: EvolutionEvent[], member: AgentMember): { state: AgentState; eventType: string } => {
-  const started = events.find((event) => event.type === member.startEvent)
-  const completed = events.find((event) => event.type === member.completedEvent && event.status === 'completed')
+  const started = [...events].reverse().find((event) => event.type === member.startEvent)
+  const completed = [...events].reverse().find((event) => event.type === member.completedEvent && event.status === 'completed')
   if (started?.status === 'processing') return { state: 'working', eventType: started.type }
   if (started?.status === 'failed') return { state: 'failed', eventType: started.type }
   if (started?.status === 'cancelled') return { state: 'stopped', eventType: started.type }
-  if (completed || started?.status === 'completed') return { state: 'done', eventType: completed?.type ?? started?.type ?? member.completedEvent }
   if (started?.status === 'pending') return { state: 'queued', eventType: started.type }
+  if (completed || started?.status === 'completed') return { state: 'done', eventType: completed?.type ?? started?.type ?? member.completedEvent }
   return { state: 'waiting', eventType: member.startEvent }
 }
 
@@ -80,6 +80,7 @@ function App() {
   const selected = evolutions.find((item) => item.id === selectedId) ?? evolutions[0]
   const isActive = selected?.status === 'running' || selected?.status === 'stopRequested'
   const activeEvent = selected?.events.find((item) => item.status === 'processing')
+  const latestActivity = activeEvent?.logs.at(-1) ?? activeEvent?.prompt ?? 'Waiting for the next persisted event.'
 
   const refresh = async () => {
     try {
@@ -87,7 +88,7 @@ function App() {
       if (!response.ok) throw new Error(`API returned ${response.status}`)
       const data: Evolution[] = await response.json()
       setEvolutions(data)
-      setSelectedId((current) => current ?? data[0]?.id)
+      setSelectedId((current) => (current && data.some((item) => item.id === current) ? current : data[0]?.id))
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not reach the API.')
@@ -102,6 +103,7 @@ function App() {
         const data: { repositoryPath: string } = await response.json()
         setForm((current) => current.repositoryPath ? current : { ...current, repositoryPath: data.repositoryPath })
       })
+      .catch(() => undefined)
     const timer = window.setInterval(() => void refresh(), 1500)
     const clock = window.setInterval(() => setNow(Date.now()), 1000)
     return () => { window.clearInterval(timer); window.clearInterval(clock) }
@@ -220,7 +222,7 @@ function App() {
               </div>
             </div>
 
-            {isActive && <div className="active-work"><span className="pulse" /><div><small>{selected.status === 'stopRequested' ? 'Stopping after current event' : `Still working · ${formatHeartbeat(activeEvent?.startedAt, now)} in this step`}</small><strong>{activeEvent?.type.replaceAll('.', ' ') ?? 'Preparing next event'}</strong><p>{activeEvent?.prompt ?? 'Waiting for the next persisted event.'}</p></div><div className="running-time"><Timer size={16} />{formatDuration(selected.startedAt, undefined, now)}</div></div>}
+            {isActive && <div className="active-work"><span className="pulse" /><div><small>{selected.status === 'stopRequested' ? 'Stopping after current event' : `Live activity · ${formatHeartbeat(activeEvent?.startedAt, now)} in this step`}</small><strong>{activeEvent?.type.replaceAll('.', ' ') ?? 'Preparing next event'}</strong><p>{latestActivity}</p></div><div className="running-time"><Timer size={16} />{formatDuration(selected.startedAt, undefined, now)}</div></div>}
 
             <div className="metrics">
               <div><span>Target</span><strong><GitBranch size={16} />{selected.targetBranch}</strong></div>
@@ -242,7 +244,7 @@ function App() {
                   </div>
                 </div>
                 <div className="section-title"><Check size={17} /><h3>Agent day plan</h3></div>
-                {selected.workItems.length === 0 ? <p className="empty">Plan appears after the scan completes.</p> : selected.workItems.map((item, index) => <div className="work-item" key={item.id}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.status}</small><p>{item.description}</p>{item.result && <pre>{item.result}</pre>}</div></div>)}
+                {selected.workItems.length === 0 ? <p className="empty">The plan will appear when the planning agent completes.</p> : selected.workItems.map((item, index) => <div className="work-item" key={item.id}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.status}</small><p>{item.description}</p>{item.result && <pre>{item.result}</pre>}</div></div>)}
               </section>
               <section className="panel timeline-panel">
                 <div className="section-title"><Clock3 size={17} /><h3>Event timeline</h3></div>
