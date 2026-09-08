@@ -6,6 +6,14 @@ Code Evolver is an event-driven service that accepts a repository, direction, sc
 
 Prerequisites: .NET 10 SDK, Node.js 22 or newer, and npm.
 
+Start the API and web app together. The script opens the app after it is ready:
+
+```powershell
+.\start-code-evolver.ps1
+```
+
+Pass `-NoBrowser` to start both services without opening a browser. To run each service manually:
+
 ```powershell
 dotnet run --project .\src\CodeEvolver.Api
 npm run dev --prefix .\src\code-evolver-web
