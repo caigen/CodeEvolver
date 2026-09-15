@@ -1,4 +1,5 @@
 ﻿using CodeEvolver.Api;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeEvolver.Api.Tests;
@@ -75,6 +76,88 @@ public sealed class EvolutionLifecycleTests
         Assert.Equal("Fix polling", workItems[0].Title);
         Assert.Equal("Persist live agent progress.", workItems[0].Description);
         Assert.Equal("Agent is reasoning.", AgentOutputParser.GetProgress("{\"type\":\"model.call_start\",\"data\":{}}"));
+    }
+
+    [Fact]
+    public void ResolveExecutable_FindsWindowsCommandShim()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory.FullName, "copilot"), "not executable on Windows");
+            var shim = Path.Combine(directory.FullName, "copilot.cmd");
+            File.WriteAllText(shim, "@echo off");
+
+            var resolved = CopilotAgentRunner.ResolveExecutable(
+                "copilot",
+                directory.FullName,
+                isWindows: true,
+                pathExtensions: ".EXE;.CMD");
+
+            Assert.Equal(shim, resolved);
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public void ResolveExecutable_PreservesConfiguredPath()
+    {
+        var configured = Path.Combine("tools", "copilot");
+
+        var resolved = CopilotAgentRunner.ResolveExecutable(configured, "", isWindows: true);
+
+        Assert.Equal(configured, resolved);
+    }
+
+    [Fact]
+    public void ResolveCommand_BypassesWindowsNpmShim()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var shim = Path.Combine(directory.FullName, "copilot.cmd");
+            var node = Path.Combine(directory.FullName, "node.exe");
+            var loader = Path.Combine(directory.FullName, "node_modules", "@github", "copilot", "npm-loader.js");
+            Directory.CreateDirectory(Path.GetDirectoryName(loader)!);
+            File.WriteAllText(shim, "@echo off");
+            File.WriteAllText(node, "");
+            File.WriteAllText(loader, "");
+
+            var command = CopilotAgentRunner.ResolveCommand(shim, isWindows: true);
+
+            Assert.Equal(node, command.FileName);
+            Assert.Equal([loader], command.PrefixArguments);
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public void MergePrompt_CanDisableRepositoryPublishing()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Agent:Copilot:PublishChanges"] = "false"
+            })
+            .Build();
+        var runner = new CopilotAgentRunner(configuration, NullLogger<CopilotAgentRunner>.Instance);
+        var evolution = new Evolution
+        {
+            RepositoryPath = ".",
+            Direction = "Verify self-hosting",
+            Scope = "README.md",
+            TargetBranch = "main"
+        };
+
+        var prompt = runner.GetPrompt(evolution, EvolutionEventTypes.ChangeMerged);
+
+        Assert.Contains("Do not commit, push, or open a pull request.", prompt);
     }
 
     [Fact]
