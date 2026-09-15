@@ -1,5 +1,8 @@
 ﻿using CodeEvolver.Api;
+using System.Diagnostics;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeEvolver.Api.Tests;
@@ -79,6 +82,17 @@ public sealed class EvolutionLifecycleTests
     }
 
     [Fact]
+    public void AgentOutputParser_IgnoresUnexpectedJsonShape()
+    {
+        Assert.Null(AgentOutputParser.GetProgress("{}"));
+        Assert.Null(AgentOutputParser.GetFinalResponse("""
+            {}
+            {"type":"assistant.message"}
+            {"type":"assistant.message","data":null}
+            """));
+    }
+
+    [Fact]
     public void ResolveExecutable_FindsWindowsCommandShim()
     {
         var directory = Directory.CreateTempSubdirectory();
@@ -103,13 +117,28 @@ public sealed class EvolutionLifecycleTests
     }
 
     [Fact]
-    public void ResolveExecutable_PreservesConfiguredPath()
+    public void ResolveExecutable_FindsConfiguredWindowsCommandShim()
     {
-        var configured = Path.Combine("tools", "copilot");
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var tools = Directory.CreateDirectory(Path.Combine(directory.FullName, "tools"));
+            var shim = Path.Combine(tools.FullName, "copilot.cmd");
+            File.WriteAllText(shim, "@echo off");
 
-        var resolved = CopilotAgentRunner.ResolveExecutable(configured, "", isWindows: true);
+            var resolved = CopilotAgentRunner.ResolveExecutable(
+                Path.Combine("tools", "copilot"),
+                "",
+                isWindows: true,
+                pathExtensions: ".EXE;.CMD",
+                currentDirectory: directory.FullName);
 
-        Assert.Equal(configured, resolved);
+            Assert.Equal(shim, resolved);
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
     }
 
     [Fact]
@@ -158,6 +187,45 @@ public sealed class EvolutionLifecycleTests
         var prompt = runner.GetPrompt(evolution, EvolutionEventTypes.ChangeMerged);
 
         Assert.Contains("Do not commit, push, or open a pull request.", prompt);
+        var arguments = runner.BuildArguments(prompt);
+        Assert.Contains("--disable-builtin-mcps", arguments);
+        Assert.Contains("--deny-tool=shell(git commit)", arguments);
+        Assert.Contains("--deny-tool=shell(git push)", arguments);
+        Assert.Contains("--deny-tool=shell(gh pr create)", arguments);
+    }
+
+    [Fact]
+    public void RedactSecrets_RemovesConfiguredValues()
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["TOKEN"] = "top-secret",
+            ["EMPTY"] = ""
+        };
+
+        var redacted = CopilotAgentRunner.RedactSecrets(
+            "stderr contained top-secret",
+            "TOKEN,EMPTY",
+            name => values.GetValueOrDefault(name));
+
+        Assert.Equal("stderr contained ***", redacted);
+    }
+
+    [Fact]
+    public async Task TerminateProcess_StopsRunningProcessTree()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = "-NoProfile -Command \"Start-Sleep -Seconds 30\"",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        })!;
+
+        await CopilotAgentRunner.TerminateProcessAsync(process);
+
+        Assert.True(process.HasExited);
     }
 
     [Fact]
@@ -199,6 +267,57 @@ public sealed class EvolutionLifecycleTests
         Assert.Equal(EvolutionStatus.Failed, recovered.Status);
         Assert.Contains("interrupted", recovered.Error);
         Assert.Equal(EvolutionEventStatus.Failed, recovered.Events.Single(item => item.Id == claimed.Value.Event.Id).Status);
+    }
+
+    [Fact]
+    public async Task EventMonitor_PersistsFailureWhenCancellationTokenIsCancelled()
+    {
+        var store = new MemoryEvolutionStore(honorCancellation: true);
+        var coordinator = new EvolutionCoordinator(store);
+        var evolution = await coordinator.CreateAsync(new CreateEvolutionRequest(".", "Improve tests", "tests", "main"), CancellationToken.None);
+        await coordinator.StartAsync(evolution.Id, CancellationToken.None);
+        var claimed = await store.ClaimNextEventAsync(CancellationToken.None);
+        Assert.NotNull(claimed);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var monitor = new EventMonitor(store, new LocalAgentRunner(), NullLogger<EventMonitor>.Instance);
+
+        await monitor.ProcessAsync(claimed.Value.Evolution, claimed.Value.Event, cancellation.Token);
+
+        var failed = await store.GetAsync(evolution.Id, CancellationToken.None);
+        Assert.NotNull(failed);
+        Assert.Equal(EvolutionStatus.Failed, failed.Status);
+        Assert.Equal(EvolutionEventStatus.Failed, failed.Events.Single(item => item.Id == claimed.Value.Event.Id).Status);
+    }
+
+    [Fact]
+    public async Task JsonStore_SerializesConcurrentInstances()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var environment = new TestWebHostEnvironment { ContentRootPath = directory.FullName };
+            var stores = new[] { new JsonEvolutionStore(environment), new JsonEvolutionStore(environment) };
+            var evolutions = Enumerable.Range(0, 20)
+                .Select(index => new Evolution
+                {
+                    RepositoryPath = ".",
+                    Direction = $"Evolution {index}",
+                    Scope = ".",
+                    TargetBranch = "main"
+                })
+                .ToArray();
+
+            await Task.WhenAll(evolutions.Select((evolution, index) =>
+                stores[index % stores.Length].SaveAsync(evolution, CancellationToken.None)));
+
+            var saved = await stores[0].ListAsync(CancellationToken.None);
+            Assert.Equal(evolutions.Select(item => item.Id).Order(), saved.Select(item => item.Id).Order());
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
     }
 
     [Fact]
@@ -277,11 +396,19 @@ public sealed class EvolutionLifecycleTests
 
     private sealed class MemoryEvolutionStore : IEvolutionStore
     {
+        private readonly bool honorCancellation;
         private readonly List<Evolution> evolutions = [];
+
+        public MemoryEvolutionStore(bool honorCancellation = false)
+        {
+            this.honorCancellation = honorCancellation;
+        }
+
         public Task<IReadOnlyList<Evolution>> ListAsync(CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<Evolution>>(evolutions);
         public Task<Evolution?> GetAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(evolutions.SingleOrDefault(item => item.Id == id));
         public Task<Evolution> SaveAsync(Evolution evolution, CancellationToken cancellationToken)
         {
+            if (honorCancellation) cancellationToken.ThrowIfCancellationRequested();
             if (!evolutions.Contains(evolution)) evolutions.Add(evolution);
             return Task.FromResult(evolution);
         }
@@ -316,5 +443,15 @@ public sealed class EvolutionLifecycleTests
                 : [];
             return Task.FromResult(new AgentResult(eventType, workItems, []));
         }
+    }
+
+    private sealed class TestWebHostEnvironment : IWebHostEnvironment
+    {
+        public string ApplicationName { get; set; } = "CodeEvolver.Api.Tests";
+        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
+        public string WebRootPath { get; set; } = "";
+        public string EnvironmentName { get; set; } = "Test";
+        public string ContentRootPath { get; set; } = "";
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 }

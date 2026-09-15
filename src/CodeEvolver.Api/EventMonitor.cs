@@ -130,7 +130,10 @@ public sealed class EventMonitor(IEvolutionStore store, IAgentRunner agentRunner
             evolution.Status = EvolutionStatus.Failed;
             evolution.Error = exception.Message;
             evolution.CompletedAt = DateTimeOffset.UtcNow;
-            await store.SaveAsync(evolution, cancellationToken);
+            var persistenceToken = exception is OperationCanceledException && cancellationToken.IsCancellationRequested
+                ? CancellationToken.None
+                : cancellationToken;
+            await store.SaveAsync(evolution, persistenceToken);
         }
     }
 

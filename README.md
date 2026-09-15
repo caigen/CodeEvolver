@@ -38,6 +38,7 @@ In one PowerShell terminal:
 ```powershell
 npm ci --prefix .\src\code-evolver-web
 $env:Agent__Copilot__PublishChanges = "false"
+$env:Agent__Copilot__ReadOnly = "true"
 $env:Agent__Copilot__MaxAiCredits = "30"
 $env:Agent__Copilot__SecretEnvironmentVariables = "GH_TOKEN,GITHUB_TOKEN,COPILOT_GITHUB_TOKEN"
 dotnet run --project .\src\CodeEvolver.Api --no-launch-profile --urls http://127.0.0.1:5278
@@ -58,7 +59,7 @@ $evolution = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5278/api/evolu
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5278/api/evolutions/$($evolution.id)/start"
 ```
 
-Poll `GET /api/evolutions/{id}` until `status` is `completed` or `failed`. Runtime records remain in the ignored `src/CodeEvolver.Api/data/evolutions.json` file. Omit `Agent__Copilot__PublishChanges=false` only when the worktree is ready for Code Evolver to commit, push an `evolution/<id>` branch, and open a pull request.
+Poll `GET /api/evolutions/{id}` until `status` is `completed` or `failed`. Runtime records remain in the ignored `src/CodeEvolver.Api/data/evolutions.json` file; a sibling lock file serializes mutations when multiple service instances target the same worktree. Read-only mode fingerprints tracked and untracked workspace state around every phase and fails the evolution if the agent changes it. The protected `HumanDesign` directory is fingerprinted for every run. No-publish mode disables built-in GitHub tools and denies the normal Git commit, push, and pull-request commands. Omit `Agent__Copilot__ReadOnly=true` when an evolution should edit files, and omit `Agent__Copilot__PublishChanges=false` only when the worktree is ready for Code Evolver to commit, push an `evolution/<id>` branch, and open a pull request.
 
 ## Use Cassandra
 

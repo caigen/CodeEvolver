@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -15,6 +16,14 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
 
         var prompt = BuildPrompt(evolution, eventType);
         var command = ResolveCommand(configuration["Agent:Copilot:Executable"] ?? "copilot");
+        var readOnly = configuration.GetValue("Agent:Copilot:ReadOnly", false);
+        var workspaceFingerprint = readOnly
+            ? await CaptureGitFingerprintAsync(evolution.RepositoryPath, [], cancellationToken)
+            : null;
+        var humanDesignFingerprint = await CaptureGitFingerprintAsync(
+            evolution.RepositoryPath,
+            ["HumanDesign"],
+            cancellationToken);
         var startInfo = new ProcessStartInfo
         {
             FileName = command.FileName,
@@ -25,24 +34,8 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
             CreateNoWindow = true
         };
         foreach (var argument in command.PrefixArguments) startInfo.ArgumentList.Add(argument);
-        startInfo.ArgumentList.Add("--prompt");
-        startInfo.ArgumentList.Add(prompt);
-        startInfo.ArgumentList.Add("--allow-all-tools");
-        startInfo.ArgumentList.Add("--no-ask-user");
-        startInfo.ArgumentList.Add("--no-color");
-        startInfo.ArgumentList.Add("--output-format");
-        startInfo.ArgumentList.Add("json");
-        startInfo.ArgumentList.Add("--stream");
-        startInfo.ArgumentList.Add("on");
+        foreach (var argument in BuildArguments(prompt)) startInfo.ArgumentList.Add(argument);
         var secretEnvironmentVariables = configuration["Agent:Copilot:SecretEnvironmentVariables"];
-        if (!string.IsNullOrWhiteSpace(secretEnvironmentVariables))
-            startInfo.ArgumentList.Add($"--secret-env-vars={secretEnvironmentVariables}");
-        var maxAiCredits = configuration["Agent:Copilot:MaxAiCredits"];
-        if (!string.IsNullOrWhiteSpace(maxAiCredits))
-        {
-            startInfo.ArgumentList.Add("--max-ai-credits");
-            startInfo.ArgumentList.Add(maxAiCredits);
-        }
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(configuration.GetValue("Agent:Copilot:TimeoutMinutes", 20)));
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
@@ -51,7 +44,7 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
         try
         {
             process.Start();
-            var errorTask = process.StandardError.ReadToEndAsync(linkedCancellation.Token);
+            var errorTask = process.StandardError.ReadToEndAsync();
             while (await process.StandardOutput.ReadLineAsync(linkedCancellation.Token) is { } line)
             {
                 output.AppendLine(line);
@@ -60,26 +53,71 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
                     await reportProgress(progress, linkedCancellation.Token);
             }
             await process.WaitForExitAsync(linkedCancellation.Token);
-            var error = (await errorTask).Trim();
+            var error = RedactSecrets((await errorTask).Trim(), secretEnvironmentVariables);
             if (process.ExitCode != 0)
                 throw new InvalidOperationException($"Copilot CLI failed ({process.ExitCode}): {error}");
             if (!string.IsNullOrEmpty(error)) logger.LogWarning("Copilot CLI: {Error}", error);
 
-            var detail = AgentOutputParser.GetFinalResponse(output.ToString()) ?? $"Copilot completed {eventType}.";
+            var detail = AgentOutputParser.GetFinalResponse(output.ToString());
+            if (detail is null)
+                throw new InvalidOperationException($"Copilot CLI completed {eventType} without a recognizable final response.");
+            detail = RedactSecrets(detail, secretEnvironmentVariables);
+            var finalHumanDesignFingerprint = await CaptureGitFingerprintAsync(
+                evolution.RepositoryPath,
+                ["HumanDesign"],
+                cancellationToken);
+            if (!string.Equals(humanDesignFingerprint, finalHumanDesignFingerprint, StringComparison.Ordinal))
+                throw new InvalidOperationException($"Copilot modified the protected HumanDesign directory during {eventType}.");
+            if (readOnly)
+            {
+                var finalFingerprint = await CaptureGitFingerprintAsync(evolution.RepositoryPath, [], cancellationToken);
+                if (!string.Equals(workspaceFingerprint, finalFingerprint, StringComparison.Ordinal))
+                    throw new InvalidOperationException($"Copilot modified the repository during read-only {eventType}.");
+            }
             var workItems = eventType == EvolutionEventTypes.PlanStarted ? AgentOutputParser.GetWorkItems(detail) : [];
             var logs = string.IsNullOrWhiteSpace(error) ? Array.Empty<string>() : [$"stderr: {error}"];
             return new AgentResult(detail, workItems, logs);
         }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            if (!process.HasExited) process.Kill(true);
-            throw new TimeoutException($"Copilot exceeded the {configuration.GetValue("Agent:Copilot:TimeoutMinutes", 20)} minute limit for {eventType}.");
+            await TerminateProcessAsync(process);
+            if (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                throw new TimeoutException($"Copilot exceeded the {configuration.GetValue("Agent:Copilot:TimeoutMinutes", 20)} minute limit for {eventType}.");
+            throw;
         }
+    }
+
+    internal IReadOnlyList<string> BuildArguments(string prompt)
+    {
+        var arguments = new List<string>
+        {
+            "--prompt", prompt, "--allow-all-tools", "--no-ask-user", "--no-color",
+            "--output-format", "json", "--stream", "on"
+        };
+        if (!configuration.GetValue("Agent:Copilot:PublishChanges", true))
+        {
+            arguments.Add("--disable-builtin-mcps");
+            arguments.Add("--deny-tool=shell(git commit)");
+            arguments.Add("--deny-tool=shell(git push)");
+            arguments.Add("--deny-tool=shell(gh pr create)");
+        }
+        var secretEnvironmentVariables = configuration["Agent:Copilot:SecretEnvironmentVariables"];
+        if (!string.IsNullOrWhiteSpace(secretEnvironmentVariables))
+            arguments.Add($"--secret-env-vars={secretEnvironmentVariables}");
+        var maxAiCredits = configuration["Agent:Copilot:MaxAiCredits"];
+        if (!string.IsNullOrWhiteSpace(maxAiCredits))
+        {
+            arguments.Add("--max-ai-credits");
+            arguments.Add(maxAiCredits);
+        }
+        return arguments;
     }
 
     private string BuildPrompt(Evolution evolution, string eventType)
     {
         var context = $"Evolution direction: {evolution.Direction}\nScope: {evolution.Scope}\nTarget PR branch: {evolution.TargetBranch}\n";
+        if (configuration.GetValue("Agent:Copilot:ReadOnly", false))
+            context += "Read-only mode is enforced. Do not modify, create, delete, move, stage, or commit files.\n";
         return eventType switch
         {
             EvolutionEventTypes.ScanStarted => context + "Inspect the scoped code. Do not edit files. Return a concise technical scan with risks and relevant paths.",
@@ -99,18 +137,27 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
         string executable,
         string? pathEnvironment = null,
         bool? isWindows = null,
-        string? pathExtensions = null)
+        string? pathExtensions = null,
+        string? currentDirectory = null)
     {
-        if (Path.IsPathFullyQualified(executable) ||
-            executable.Contains(Path.DirectorySeparatorChar) ||
-            executable.Contains(Path.AltDirectorySeparatorChar))
-            return executable;
-
         var windows = isWindows ?? OperatingSystem.IsWindows();
         var extensions = windows && !Path.HasExtension(executable)
             ? (pathExtensions ?? Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
                 .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             : [""];
+        if (Path.IsPathFullyQualified(executable) ||
+            executable.Contains(Path.DirectorySeparatorChar) ||
+            executable.Contains(Path.AltDirectorySeparatorChar))
+        {
+            var basePath = currentDirectory ?? Environment.CurrentDirectory;
+            foreach (var extension in extensions)
+            {
+                var candidate = Path.GetFullPath(executable + extension.ToLowerInvariant(), basePath);
+                if (File.Exists(candidate)) return candidate;
+            }
+            return executable;
+        }
+
         foreach (var directory in (pathEnvironment ?? Environment.GetEnvironmentVariable("PATH") ?? "")
                      .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -146,6 +193,66 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
         return new AgentCommand(node, [npmLoader]);
     }
 
+    internal static string RedactSecrets(string value, string? variableNames, Func<string, string?>? getEnvironmentVariable = null)
+    {
+        if (string.IsNullOrEmpty(value) || string.IsNullOrWhiteSpace(variableNames)) return value;
+        getEnvironmentVariable ??= Environment.GetEnvironmentVariable;
+        foreach (var variableName in variableNames.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var secret = getEnvironmentVariable(variableName);
+            if (!string.IsNullOrEmpty(secret))
+                value = value.Replace(secret, "***", StringComparison.Ordinal);
+        }
+        return value;
+    }
+
+    internal static async Task TerminateProcessAsync(Process process)
+    {
+        if (!process.HasExited) process.Kill(true);
+        using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await process.WaitForExitAsync(cleanupTimeout.Token);
+    }
+
+    private static async Task<string> CaptureGitFingerprintAsync(
+        string repositoryPath,
+        IReadOnlyList<string> pathspecs,
+        CancellationToken cancellationToken)
+    {
+        var statusArguments = new List<string> { "status", "--porcelain=v1", "--untracked-files=all" };
+        var diffArguments = new List<string> { "diff", "--binary", "HEAD", "--" };
+        if (pathspecs.Count > 0)
+        {
+            statusArguments.Add("--");
+            statusArguments.AddRange(pathspecs);
+            diffArguments.AddRange(pathspecs);
+        }
+        var status = await RunGitAsync(repositoryPath, statusArguments, cancellationToken);
+        var diff = await RunGitAsync(repositoryPath, diffArguments, cancellationToken);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(status + '\0' + diff)));
+    }
+
+    private static async Task<string> RunGitAsync(string repositoryPath, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = repositoryPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Could not start Git.");
+        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+        var error = (await errorTask).Trim();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"Git failed while checking read-only workspace state ({process.ExitCode}): {error}");
+        return await outputTask;
+    }
+
     private static string BuildWorkItemPrompt(Evolution evolution)
     {
         var workItem = evolution.WorkItems.FirstOrDefault(item => item.Status is "working" or "planned");
@@ -165,7 +272,9 @@ public static class AgentOutputParser
         {
             using var document = JsonDocument.Parse(line);
             var root = document.RootElement;
-            var type = root.GetProperty("type").GetString();
+            if (!root.TryGetProperty("type", out var typeElement) || typeElement.ValueKind != JsonValueKind.String)
+                return null;
+            var type = typeElement.GetString();
             if (type == "model.call_start") return "Agent is reasoning.";
             if (type == "assistant.turn_start") return "Agent started a work turn.";
             if (type?.Contains("tool", StringComparison.OrdinalIgnoreCase) == true)
@@ -188,8 +297,13 @@ public static class AgentOutputParser
             {
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
-                if (root.GetProperty("type").GetString() == "assistant.message" &&
-                    root.GetProperty("data").TryGetProperty("content", out var content))
+                if (root.TryGetProperty("type", out var type) &&
+                    type.ValueKind == JsonValueKind.String &&
+                    type.GetString() == "assistant.message" &&
+                    root.TryGetProperty("data", out var data) &&
+                    data.ValueKind == JsonValueKind.Object &&
+                    data.TryGetProperty("content", out var content) &&
+                    content.ValueKind == JsonValueKind.String)
                     response = content.GetString();
             }
             catch (JsonException) { }

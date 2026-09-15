@@ -41,6 +41,7 @@ public sealed class JsonEvolutionStore(IWebHostEnvironment environment) : IEvolu
         await gate.WaitAsync(cancellationToken);
         try
         {
+            await using var fileLock = await AcquireFileLockAsync(cancellationToken);
             var evolutions = await ReadUnsafeAsync(cancellationToken);
             var index = evolutions.FindIndex(item => item.Id == evolution.Id);
             evolution.UpdatedAt = DateTimeOffset.UtcNow;
@@ -56,6 +57,7 @@ public sealed class JsonEvolutionStore(IWebHostEnvironment environment) : IEvolu
         await gate.WaitAsync(cancellationToken);
         try
         {
+            await using var fileLock = await AcquireFileLockAsync(cancellationToken);
             var evolutions = await ReadUnsafeAsync(cancellationToken);
             var removed = evolutions.RemoveAll(item => item.Id == id) > 0;
             if (removed) await WriteUnsafeAsync(evolutions, cancellationToken);
@@ -69,6 +71,7 @@ public sealed class JsonEvolutionStore(IWebHostEnvironment environment) : IEvolu
         await gate.WaitAsync(cancellationToken);
         try
         {
+            await using var fileLock = await AcquireFileLockAsync(cancellationToken);
             var evolutions = await ReadUnsafeAsync(cancellationToken);
             var evolution = evolutions.FirstOrDefault(item => item.Status == EvolutionStatus.Running && item.Events.Any(entry => entry.Status == EvolutionEventStatus.Pending));
             var evolutionEvent = evolution?.Events.FirstOrDefault(entry => entry.Status == EvolutionEventStatus.Pending);
@@ -92,9 +95,34 @@ public sealed class JsonEvolutionStore(IWebHostEnvironment environment) : IEvolu
     private async Task WriteUnsafeAsync(List<Evolution> evolutions, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var temporaryPath = $"{path}.tmp";
-        await using (var stream = File.Create(temporaryPath))
-            await JsonSerializer.SerializeAsync(stream, evolutions, JsonOptions, cancellationToken);
-        File.Move(temporaryPath, path, true);
+        var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await using (var stream = File.Create(temporaryPath))
+                await JsonSerializer.SerializeAsync(stream, evolutions, JsonOptions, cancellationToken);
+            File.Move(temporaryPath, path, true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+    }
+
+    private async Task<FileStream> AcquireFileLockAsync(CancellationToken cancellationToken)
+    {
+        var lockPath = $"{path}.lock";
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException)
+            {
+                await Task.Delay(50, cancellationToken);
+            }
+        }
     }
 }
