@@ -14,15 +14,17 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
             throw new DirectoryNotFoundException($"Repository path '{evolution.RepositoryPath}' does not exist.");
 
         var prompt = BuildPrompt(evolution, eventType);
+        var command = ResolveCommand(configuration["Agent:Copilot:Executable"] ?? "copilot");
         var startInfo = new ProcessStartInfo
         {
-            FileName = configuration["Agent:Copilot:Executable"] ?? "copilot",
+            FileName = command.FileName,
             WorkingDirectory = evolution.RepositoryPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        foreach (var argument in command.PrefixArguments) startInfo.ArgumentList.Add(argument);
         startInfo.ArgumentList.Add("--prompt");
         startInfo.ArgumentList.Add(prompt);
         startInfo.ArgumentList.Add("--allow-all-tools");
@@ -32,6 +34,9 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
         startInfo.ArgumentList.Add("json");
         startInfo.ArgumentList.Add("--stream");
         startInfo.ArgumentList.Add("on");
+        var secretEnvironmentVariables = configuration["Agent:Copilot:SecretEnvironmentVariables"];
+        if (!string.IsNullOrWhiteSpace(secretEnvironmentVariables))
+            startInfo.ArgumentList.Add($"--secret-env-vars={secretEnvironmentVariables}");
         var maxAiCredits = configuration["Agent:Copilot:MaxAiCredits"];
         if (!string.IsNullOrWhiteSpace(maxAiCredits))
         {
@@ -72,7 +77,7 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
         }
     }
 
-    private static string BuildPrompt(Evolution evolution, string eventType)
+    private string BuildPrompt(Evolution evolution, string eventType)
     {
         var context = $"Evolution direction: {evolution.Direction}\nScope: {evolution.Scope}\nTarget PR branch: {evolution.TargetBranch}\n";
         return eventType switch
@@ -82,9 +87,63 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
             EvolutionEventTypes.WorkItemStarted => context + BuildWorkItemPrompt(evolution),
             EvolutionEventTypes.ReviewStarted => context + "Review the current uncommitted changes against the direction. Fix concrete defects you find, then rerun focused validation. Do not modify HumanDesign.",
             EvolutionEventTypes.GateStarted => context + "Run the repository's build and unit tests for the changed scope. Fix only failures caused by this evolution. Return exact pass/fail results. Do not modify HumanDesign.",
-            EvolutionEventTypes.ChangeMerged => context + $"Create a commit for the validated changes, push an evolution branch named evolution/{evolution.Id:N}, and open a pull request targeting {evolution.TargetBranch} when repository credentials and tooling allow it. Never force push. Return the commit and PR URL, or clearly explain what external prerequisite is missing.",
+            EvolutionEventTypes.ChangeMerged when configuration.GetValue("Agent:Copilot:PublishChanges", true) =>
+                context + $"Create a commit for the validated changes, push an evolution branch named evolution/{evolution.Id:N}, and open a pull request targeting {evolution.TargetBranch} when repository credentials and tooling allow it. Never force push. Return the commit and PR URL, or clearly explain what external prerequisite is missing.",
+            EvolutionEventTypes.ChangeMerged =>
+                context + "Do not commit, push, or open a pull request. Leave validated changes in the working tree and summarize their status.",
             _ => context + $"Process lifecycle event {eventType} and report the result."
         };
+    }
+
+    internal static string ResolveExecutable(
+        string executable,
+        string? pathEnvironment = null,
+        bool? isWindows = null,
+        string? pathExtensions = null)
+    {
+        if (Path.IsPathFullyQualified(executable) ||
+            executable.Contains(Path.DirectorySeparatorChar) ||
+            executable.Contains(Path.AltDirectorySeparatorChar))
+            return executable;
+
+        var windows = isWindows ?? OperatingSystem.IsWindows();
+        var extensions = windows && !Path.HasExtension(executable)
+            ? (pathExtensions ?? Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [""];
+        foreach (var directory in (pathEnvironment ?? Environment.GetEnvironmentVariable("PATH") ?? "")
+                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            foreach (var extension in extensions)
+            {
+                var candidate = Path.Combine(directory.Trim('"'), executable + extension.ToLowerInvariant());
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+
+        return executable;
+    }
+
+    internal static AgentCommand ResolveCommand(
+        string executable,
+        string? pathEnvironment = null,
+        bool? isWindows = null,
+        string? pathExtensions = null)
+    {
+        var resolved = ResolveExecutable(executable, pathEnvironment, isWindows, pathExtensions);
+        var windows = isWindows ?? OperatingSystem.IsWindows();
+        if (!windows || !resolved.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+            return new AgentCommand(resolved, []);
+
+        var directory = Path.GetDirectoryName(resolved)!;
+        var npmLoader = Path.Combine(directory, "node_modules", "@github", "copilot", "npm-loader.js");
+        if (!File.Exists(npmLoader)) return new AgentCommand(resolved, []);
+
+        var bundledNode = Path.Combine(directory, "node.exe");
+        var node = File.Exists(bundledNode)
+            ? bundledNode
+            : ResolveExecutable("node", pathEnvironment, isWindows: true, pathExtensions);
+        return new AgentCommand(node, [npmLoader]);
     }
 
     private static string BuildWorkItemPrompt(Evolution evolution)
@@ -95,6 +154,8 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
             : $"Implement only this work item within 15 minutes:\nTitle: {workItem.Title}\nDescription: {workItem.Description}\nRun focused checks after the first edit. Do not modify HumanDesign. Finish and summarize edits and validation.";
     }
 }
+
+internal sealed record AgentCommand(string FileName, IReadOnlyList<string> PrefixArguments);
 
 public static class AgentOutputParser
 {
