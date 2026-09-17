@@ -169,6 +169,18 @@ function App() {
     setForm((current) => ({ ...emptyForm, repositoryPath: current.repositoryPath }))
   }
 
+  const selectEvolution = (evolution: Evolution) => {
+    setSelectedId(evolution.id)
+    setEditingId(undefined)
+    setForm({
+      repositoryPath: evolution.repositoryPath,
+      direction: evolution.direction,
+      scope: evolution.scope,
+      targetBranch: evolution.targetBranch,
+    })
+    window.localStorage.setItem(repositoryStorageKey, evolution.repositoryPath)
+  }
+
   const deleteEvolution = async () => {
     if (!selected || isActive || !window.confirm(`Delete evolution “${selected.direction}”?`)) return
     setBusy(true)
@@ -227,7 +239,7 @@ function App() {
             <div className="section-title"><Server size={17} /><h2>Evolutions</h2><span>{evolutions.length}</span></div>
             {evolutions.length === 0 && <p className="empty">No evolutions yet.</p>}
             {evolutions.map((item) => (
-              <button key={item.id} className={`evolution-row ${selected?.id === item.id ? 'selected' : ''}`} onClick={() => setSelectedId(item.id)}>
+              <button key={item.id} className={`evolution-row ${selected?.id === item.id ? 'selected' : ''}`} onClick={() => selectEvolution(item)}>
                 <span className={`status-dot ${item.status}`} />
                 <span><strong>{item.direction}</strong><small>{item.scope}</small></span>
                 <ArrowRight size={15} />
