@@ -1,6 +1,19 @@
 # Code Evolver
 
-Code Evolver is an event-driven service that accepts a repository, direction, scope, and target branch, then advances the request through scan, plan, implementation, review, gate, and pull-request phases.
+Code Evolver is an event-driven service that turns either a human direction or a data-derived recommendation into autonomous repository work. It advances each evolution through scan, plan, implementation, review, gate, and pull-request phases while exposing live agent status, prompts, logs, results, errors, and quiet-time heartbeats in the UI.
+
+## Product workflow
+
+The workspace is organized into two horizontal areas:
+
+```text
+Analyzer  | Analyzer Team and Analysis Timeline
+Evolution | Evolution Team and Event Timeline
+```
+
+The Analyzer accepts CSV or JSON files up to 5 MB. Purpose, Insight, Evolution Direction, and Summary agents run in order using a bounded profile of at most 1,000 rows and 100 columns. Raw row values are not sent to Copilot. The resulting direction and key points can be applied to the evolution form.
+
+The Evolution area accepts a cloned repository path, direction, scope, and target branch. Use the native folder button to select an absolute repository path; the browser remembers the latest path locally. Selecting a saved evolution refills the form. After an evolution starts, its agents and timeline update with detailed GitHub Copilot activity until completion, failure, or a human Stop request.
 
 ## Run locally
 
@@ -26,8 +39,6 @@ npm run dev --prefix .\src\code-evolver-web
 ```
 
 Open http://localhost:5173. Runtime state is stored in `src/CodeEvolver.Api/data/evolutions.json` by default. Install and authenticate the standalone GitHub Copilot CLI before starting the API. Copilot is the default agent and runs non-interactively in the selected repository, where it can edit files and run commands. The final phase attempts a commit, push, and pull request; Git credentials and repository hosting access must already be configured. The UI's Stop action prevents pending phases from starting, but cannot interrupt a CLI phase already in progress.
-
-Before creating an evolution, the Data Analyzer Agent Team can profile a CSV or JSON file up to 5 MB. Purpose, Insight, Evolution Direction, and Summary agents run in order and report through the existing event timeline before proposing one direction with key points. The server sends Copilot a bounded profile containing column names, completeness, cardinality, and numeric statistics rather than raw row values. Review and apply the recommendation to populate the editable evolution direction.
 
 For UI development without autonomous repository changes, set `Agent__Provider=local` to use the lifecycle simulator explicitly. Set `Agent__Copilot__MaxAiCredits` only when a per-phase credit limit is required; current Copilot CLI versions require at least 30 credits.
 
