@@ -41,19 +41,61 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         using var process = new Process { StartInfo = startInfo };
         var output = new StringBuilder();
+        var errorOutput = new StringBuilder();
+        string? lastProgress = null;
+        var lastActivity = $"Waiting for the first streamed event for {eventType}.";
+        var lastOutputAt = DateTimeOffset.UtcNow;
+        using var progressGate = new SemaphoreSlim(1, 1);
+
+        async Task ReportProgressAsync(string message)
+        {
+            message = RedactSecrets(message, secretEnvironmentVariables);
+            if (reportProgress is null) return;
+            await progressGate.WaitAsync(linkedCancellation.Token);
+            try
+            {
+                if (string.Equals(message, lastProgress, StringComparison.Ordinal)) return;
+                lastProgress = message;
+                await reportProgress(message, linkedCancellation.Token);
+            }
+            finally
+            {
+                progressGate.Release();
+            }
+        }
+
         try
         {
             process.Start();
-            var errorTask = process.StandardError.ReadToEndAsync();
-            while (await process.StandardOutput.ReadLineAsync(linkedCancellation.Token) is { } line)
+            lastActivity = $"Started Copilot process {process.Id} for {eventType}.";
+            await ReportProgressAsync(lastActivity);
+            var errorTask = ReadStandardErrorAsync();
+            var readTask = process.StandardOutput.ReadLineAsync(linkedCancellation.Token).AsTask();
+            while (true)
             {
+                var completedTask = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(15), linkedCancellation.Token));
+                if (completedTask != readTask)
+                {
+                    var quietFor = DateTimeOffset.UtcNow - lastOutputAt;
+                    await ReportProgressAsync($"GitHub Copilot process {process.Id} is running {eventType}; no CLI event for {Math.Max(1, (int)quietFor.TotalSeconds)}s. Last activity: {lastActivity}");
+                    continue;
+                }
+
+                var line = await readTask;
+                if (line is null) break;
                 output.AppendLine(line);
+                lastOutputAt = DateTimeOffset.UtcNow;
                 var progress = AgentOutputParser.GetProgress(line);
-                if (progress is not null && reportProgress is not null)
-                    await reportProgress(progress, linkedCancellation.Token);
+                if (progress is not null)
+                {
+                    lastActivity = progress;
+                    await ReportProgressAsync(progress);
+                }
+                readTask = process.StandardOutput.ReadLineAsync(linkedCancellation.Token).AsTask();
             }
             await process.WaitForExitAsync(linkedCancellation.Token);
-            var error = RedactSecrets((await errorTask).Trim(), secretEnvironmentVariables);
+            await errorTask;
+            var error = RedactSecrets(errorOutput.ToString().Trim(), secretEnvironmentVariables);
             if (process.ExitCode != 0)
                 throw new InvalidOperationException($"Copilot CLI failed ({process.ExitCode}): {error}");
             if (!string.IsNullOrEmpty(error)) logger.LogWarning("Copilot CLI: {Error}", error);
@@ -77,6 +119,18 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
             var workItems = eventType == EvolutionEventTypes.PlanStarted ? AgentOutputParser.GetWorkItems(detail) : [];
             var logs = string.IsNullOrWhiteSpace(error) ? Array.Empty<string>() : [$"stderr: {error}"];
             return new AgentResult(detail, workItems, logs);
+
+            async Task ReadStandardErrorAsync()
+            {
+                while (await process.StandardError.ReadLineAsync(linkedCancellation.Token) is { } line)
+                {
+                    errorOutput.AppendLine(line);
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    lastOutputAt = DateTimeOffset.UtcNow;
+                    lastActivity = AgentOutputParser.FormatCliLog(line);
+                    await ReportProgressAsync(lastActivity);
+                }
+            }
         }
         catch (OperationCanceledException)
         {
@@ -179,14 +233,23 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
     {
         var resolved = ResolveExecutable(executable, pathEnvironment, isWindows, pathExtensions);
         var windows = isWindows ?? OperatingSystem.IsWindows();
-        if (!windows || !resolved.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+        if (!windows || (!resolved.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) &&
+                         !resolved.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)))
             return new AgentCommand(resolved, []);
 
-        var directory = Path.GetDirectoryName(resolved)!;
-        var npmLoader = Path.Combine(directory, "node_modules", "@github", "copilot", "npm-loader.js");
-        if (!File.Exists(npmLoader)) return new AgentCommand(resolved, []);
+        var searchDirectories = new[] { Path.GetDirectoryName(resolved)! }
+            .Concat((pathEnvironment ?? Environment.GetEnvironmentVariable("PATH") ?? "")
+                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(directory => directory.Trim('"')))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var npmLoader = searchDirectories
+            .Select(directory => Path.Combine(directory, "node_modules", "@github", "copilot", "npm-loader.js"))
+            .FirstOrDefault(File.Exists);
+        if (npmLoader is null) return new AgentCommand(resolved, []);
 
-        var bundledNode = Path.Combine(directory, "node.exe");
+        var loaderDirectory = Path.GetDirectoryName(npmLoader)!;
+        var npmBinDirectory = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(loaderDirectory)))!;
+        var bundledNode = Path.Combine(npmBinDirectory, "node.exe");
         var node = File.Exists(bundledNode)
             ? bundledNode
             : ResolveExecutable("node", pathEnvironment, isWindows: true, pathExtensions);
@@ -266,6 +329,8 @@ internal sealed record AgentCommand(string FileName, IReadOnlyList<string> Prefi
 
 public static class AgentOutputParser
 {
+    public static string FormatCliLog(string line) => FormatProgress("Copilot CLI", line);
+
     public static string? GetProgress(string line)
     {
         try
@@ -275,22 +340,80 @@ public static class AgentOutputParser
             if (!root.TryGetProperty("type", out var typeElement) || typeElement.ValueKind != JsonValueKind.String)
                 return null;
             var type = typeElement.GetString();
-            if (type == "model.call_start") return "Agent is reasoning.";
-            if (type == "assistant.turn_start") return "Agent started a work turn.";
-            if (type?.Contains("tool", StringComparison.OrdinalIgnoreCase) == true)
+            var data = root.TryGetProperty("data", out var value) ? value : default;
+            if (type == "model.call_start") return "GitHub Copilot is reasoning.";
+            if (type == "model.call_end") return "GitHub Copilot finished reasoning.";
+            if (type == "assistant.turn_start") return "GitHub Copilot started a work turn.";
+            if (type == "assistant.turn_end") return "GitHub Copilot finished a work turn.";
+            if (type == "assistant.intent") return FormatProgress("GitHub Copilot intent", FindString(data, "intent"));
+            if (type is "assistant.reasoning" or "assistant.reasoning_delta") return "GitHub Copilot reported a reasoning update.";
+            if (type is "assistant.message_start" or "assistant.message_delta" or "assistant.streaming_delta")
+                return "GitHub Copilot is composing its response.";
+            if (type == "assistant.message") return FormatProgress("GitHub Copilot response", FindString(data, "content"));
+            if (type == "tool.execution_progress")
+                return FormatProgress("Tool progress", FindString(data, "progressMessage"));
+            if (type == "tool.execution_start")
             {
-                var data = root.TryGetProperty("data", out var value) ? value : default;
                 var name = FindString(data, "toolName") ?? FindString(data, "name") ?? "repository tool";
-                return $"Using {name}.";
+                return FormatProgress($"Using {name}", FindToolDetail(data));
             }
+            if (type == "tool.execution_complete")
+            {
+                var succeeded = data.ValueKind == JsonValueKind.Object &&
+                    data.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.True;
+                var detail = succeeded ? FindString(data, "content") : FindString(data, "message");
+                return FormatProgress(succeeded ? "Tool completed" : "Tool failed", detail);
+            }
+            if (type is "session.error" or "session.warning" or "session.info")
+                return FormatProgress($"Copilot {type[8..]}", FindEventDetail(data));
+            if (type == "session.start") return FormatProgress("Copilot session started", FindEventDetail(data));
+            if (type == "session.task_complete") return FormatProgress("Copilot task completed", FindEventDetail(data));
+            if (type?.StartsWith("subagent.", StringComparison.Ordinal) == true)
+                return FormatProgress($"Copilot {type.Replace('.', ' ')}", FindEventDetail(data));
+            if (!string.IsNullOrWhiteSpace(type))
+                return FormatProgress($"Copilot event {type}", FindEventDetail(data));
         }
-        catch (JsonException) { }
+        catch (JsonException)
+        {
+            return string.IsNullOrWhiteSpace(line) ? null : FormatProgress("Copilot output", line);
+        }
+        return string.IsNullOrWhiteSpace(line) ? null : "Copilot emitted an untyped event.";
+    }
+
+    private static string? FindToolDetail(JsonElement data)
+    {
+        if (data.ValueKind != JsonValueKind.Object || !data.TryGetProperty("arguments", out var arguments)) return null;
+        foreach (var propertyName in new[] { "description", "explanation", "path", "filePath", "query", "command" })
+        {
+            var detail = FindString(arguments, propertyName);
+            if (!string.IsNullOrWhiteSpace(detail)) return detail;
+        }
         return null;
+    }
+
+    private static string? FindEventDetail(JsonElement data)
+    {
+        foreach (var propertyName in new[] { "message", "description", "title", "status", "reason", "model", "name" })
+        {
+            var detail = FindString(data, propertyName);
+            if (!string.IsNullOrWhiteSpace(detail)) return detail;
+        }
+        return null;
+    }
+
+    private static string FormatProgress(string label, string? detail)
+    {
+        if (string.IsNullOrWhiteSpace(detail)) return $"{label}.";
+        var singleLine = string.Join(' ', detail.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (singleLine.Length > 240) singleLine = $"{singleLine[..237]}...";
+        return $"{label}: {singleLine}";
     }
 
     public static string? GetFinalResponse(string jsonLines)
     {
         string? response = null;
+        string? taskSummary = null;
+        var streamedResponse = new StringBuilder();
         foreach (var line in jsonLines.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             try
@@ -305,10 +428,31 @@ public static class AgentOutputParser
                     data.TryGetProperty("content", out var content) &&
                     content.ValueKind == JsonValueKind.String)
                     response = content.GetString();
+                else if (root.TryGetProperty("type", out type) &&
+                         type.ValueKind == JsonValueKind.String &&
+                         type.GetString() == "assistant.message_delta" &&
+                         root.TryGetProperty("data", out data) &&
+                         data.ValueKind == JsonValueKind.Object &&
+                         data.TryGetProperty("deltaContent", out var delta) &&
+                         delta.ValueKind == JsonValueKind.String)
+                    streamedResponse.Append(delta.GetString());
+                else if (root.TryGetProperty("type", out type) &&
+                         type.ValueKind == JsonValueKind.String &&
+                         type.GetString() == "session.task_complete" &&
+                         root.TryGetProperty("data", out data) &&
+                         data.ValueKind == JsonValueKind.Object &&
+                         data.TryGetProperty("summary", out var summary) &&
+                         summary.ValueKind == JsonValueKind.String)
+                    taskSummary = summary.GetString();
             }
             catch (JsonException) { }
         }
-        return string.IsNullOrWhiteSpace(response) ? null : response.Trim();
+        var finalResponse = !string.IsNullOrWhiteSpace(response)
+            ? response
+            : !string.IsNullOrWhiteSpace(taskSummary)
+                ? taskSummary
+                : streamedResponse.ToString();
+        return string.IsNullOrWhiteSpace(finalResponse) ? null : finalResponse.Trim();
     }
 
     public static IReadOnlyList<WorkItem> GetWorkItems(string response)

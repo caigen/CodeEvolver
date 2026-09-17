@@ -78,7 +78,17 @@ public sealed class EvolutionLifecycleTests
         Assert.Single(workItems);
         Assert.Equal("Fix polling", workItems[0].Title);
         Assert.Equal("Persist live agent progress.", workItems[0].Description);
-        Assert.Equal("Agent is reasoning.", AgentOutputParser.GetProgress("{\"type\":\"model.call_start\",\"data\":{}}"));
+        Assert.Equal("GitHub Copilot is reasoning.", AgentOutputParser.GetProgress("{\"type\":\"model.call_start\",\"data\":{}}"));
+        Assert.Equal("GitHub Copilot intent: Inspect the API", AgentOutputParser.GetProgress("{\"type\":\"assistant.intent\",\"data\":{\"intent\":\"Inspect the API\"}}"));
+        Assert.Equal("Using shell: Find test projects", AgentOutputParser.GetProgress("{\"type\":\"tool.execution_start\",\"data\":{\"toolName\":\"shell\",\"arguments\":{\"description\":\"Find test projects\",\"command\":\"rg tests\"}}}"));
+        Assert.Equal("Tool progress: Reading files", AgentOutputParser.GetProgress("{\"type\":\"tool.execution_progress\",\"data\":{\"toolCallId\":\"call-1\",\"progressMessage\":\"Reading files\"}}"));
+        Assert.Equal("Tool completed: Found 3 files", AgentOutputParser.GetProgress("{\"type\":\"tool.execution_complete\",\"data\":{\"toolCallId\":\"call-1\",\"success\":true,\"result\":{\"content\":\"Found 3 files\"}}}"));
+        Assert.Equal("Tool failed: Access denied", AgentOutputParser.GetProgress("{\"type\":\"tool.execution_complete\",\"data\":{\"toolCallId\":\"call-2\",\"success\":false,\"error\":{\"message\":\"Access denied\"}}}"));
+        Assert.Equal("GitHub Copilot is composing its response.", AgentOutputParser.GetProgress("{\"type\":\"assistant.message_delta\",\"data\":{\"deltaContent\":\"Scanning\"}}"));
+        Assert.Equal("Copilot session started: claude-sonnet-4.5", AgentOutputParser.GetProgress("{\"type\":\"session.start\",\"data\":{\"model\":\"claude-sonnet-4.5\"}}"));
+        Assert.Equal("Copilot event session.tools_updated.", AgentOutputParser.GetProgress("{\"type\":\"session.tools_updated\",\"data\":{}}"));
+        Assert.Equal("Copilot output: Initializing session", AgentOutputParser.GetProgress("Initializing session"));
+        Assert.Equal("Copilot CLI: Loading repository context", AgentOutputParser.FormatCliLog("  Loading repository context  "));
     }
 
     [Fact]
@@ -90,6 +100,14 @@ public sealed class EvolutionLifecycleTests
             {"type":"assistant.message"}
             {"type":"assistant.message","data":null}
             """));
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"assistant.message_delta\",\"data\":{\"deltaContent\":\"Scan \"}}\n{\"type\":\"assistant.message_delta\",\"data\":{\"deltaContent\":\"complete\"}}", "Scan complete")]
+    [InlineData("{\"type\":\"session.task_complete\",\"data\":{\"success\":true,\"summary\":\"Scan complete\"}}", "Scan complete")]
+    public void AgentOutputParser_ReadsFallbackFinalResponses(string output, string expected)
+    {
+        Assert.Equal(expected, AgentOutputParser.GetFinalResponse(output));
     }
 
     [Fact]
@@ -156,6 +174,34 @@ public sealed class EvolutionLifecycleTests
             File.WriteAllText(loader, "");
 
             var command = CopilotAgentRunner.ResolveCommand(shim, isWindows: true);
+
+            Assert.Equal(node, command.FileName);
+            Assert.Equal([loader], command.PrefixArguments);
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public void ResolveCommand_BypassesVsCodeBatchWrapperUsingNpmLoaderOnPath()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var wrapperDirectory = Directory.CreateDirectory(Path.Combine(directory.FullName, "vscode"));
+            var npmDirectory = Directory.CreateDirectory(Path.Combine(directory.FullName, "npm"));
+            var wrapper = Path.Combine(wrapperDirectory.FullName, "copilot.bat");
+            var node = Path.Combine(npmDirectory.FullName, "node.exe");
+            var loader = Path.Combine(npmDirectory.FullName, "node_modules", "@github", "copilot", "npm-loader.js");
+            Directory.CreateDirectory(Path.GetDirectoryName(loader)!);
+            File.WriteAllText(wrapper, "@echo off");
+            File.WriteAllText(node, "");
+            File.WriteAllText(loader, "");
+
+            var path = string.Join(Path.PathSeparator, wrapperDirectory.FullName, npmDirectory.FullName);
+            var command = CopilotAgentRunner.ResolveCommand("copilot", path, isWindows: true, pathExtensions: ".BAT;.CMD");
 
             Assert.Equal(node, command.FileName);
             Assert.Equal([loader], command.PrefixArguments);

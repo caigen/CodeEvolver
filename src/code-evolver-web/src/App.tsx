@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Activity, ArrowRight, Bot, Check, CircleStop, Clock3, FilePenLine, GitBranch, Play, Plus, RefreshCw, Save, Server, Timer, Trash2, X, XCircle } from 'lucide-react'
+import { Activity, ArrowRight, Bot, Check, CircleStop, Clock3, FilePenLine, FolderOpen, GitBranch, Play, Plus, RefreshCw, Save, Server, Timer, Trash2, X, XCircle } from 'lucide-react'
 import './App.css'
 
 type EvolutionStatus = 'draft' | 'running' | 'stopRequested' | 'stopped' | 'completed' | 'failed'
@@ -26,6 +26,7 @@ type Evolution = {
 }
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:5278/api'
+const repositoryStorageKey = 'code-evolver.repository-path'
 const emptyForm = { repositoryPath: '', direction: 'Improve e2e user experience & design and fix functionality issues.', scope: '.', targetBranch: 'main' }
 const agentMembers: AgentMember[] = [
   { name: 'Scan agent', startEvent: 'scan.started', completedEvent: 'scan.completed' },
@@ -72,9 +73,10 @@ const formatTimestamp = (value?: string) => value ? new Date(value).toLocaleStri
 function App() {
   const [evolutions, setEvolutions] = useState<Evolution[]>([])
   const [selectedId, setSelectedId] = useState<string>()
-  const [form, setForm] = useState(emptyForm)
+  const [form, setForm] = useState(() => ({ ...emptyForm, repositoryPath: window.localStorage.getItem(repositoryStorageKey) ?? '' }))
   const [editingId, setEditingId] = useState<string>()
   const [busy, setBusy] = useState(false)
+  const [selectingRepository, setSelectingRepository] = useState(false)
   const [error, setError] = useState('')
   const [now, setNow] = useState(0)
   const selected = evolutions.find((item) => item.id === selectedId) ?? evolutions[0]
@@ -95,13 +97,38 @@ function App() {
     }
   }
 
+  const setRepositoryPath = (repositoryPath: string) => {
+    setForm((current) => ({ ...current, repositoryPath }))
+    window.localStorage.setItem(repositoryStorageKey, repositoryPath)
+  }
+
+  const selectRepository = async () => {
+    setSelectingRepository(true)
+    try {
+      const response = await fetch(`${apiUrl}/repository/select`, { method: 'POST' })
+      if (response.status === 204) return
+      if (!response.ok) throw new Error(await readError(response, 'Could not open the repository picker.'))
+      const data: { repositoryPath: string } = await response.json()
+      setRepositoryPath(data.repositoryPath)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not select the repository.')
+    } finally {
+      setSelectingRepository(false)
+    }
+  }
+
   useEffect(() => {
     void refresh()
     void fetch(`${apiUrl}/repository`)
       .then(async (response) => {
         if (!response.ok) return
         const data: { repositoryPath: string } = await response.json()
-        setForm((current) => current.repositoryPath ? current : { ...current, repositoryPath: data.repositoryPath })
+        setForm((current) => {
+          if (current.repositoryPath) return current
+          window.localStorage.setItem(repositoryStorageKey, data.repositoryPath)
+          return { ...current, repositoryPath: data.repositoryPath }
+        })
       })
       .catch(() => undefined)
     const timer = window.setInterval(() => void refresh(), 1500)
@@ -186,7 +213,7 @@ function App() {
         <aside>
           <form onSubmit={createEvolution}>
             <div className="section-title">{editingId ? <FilePenLine size={17} /> : <Plus size={17} />}<h2>{editingId ? 'Edit evolution' : 'New evolution'}</h2></div>
-            <label>Cloned repository path<input required value={form.repositoryPath} onChange={(e) => setForm({ ...form, repositoryPath: e.target.value })} placeholder="C:\work\repository" /></label>
+            <label>Cloned repository path<div className="path-input"><input required value={form.repositoryPath} onChange={(e) => setRepositoryPath(e.target.value)} placeholder="C:\work\repository" /><button type="button" className="icon-button" title="Select repository folder" disabled={selectingRepository} onClick={() => void selectRepository()}><FolderOpen size={17} /></button></div></label>
             <label>Evolution direction<textarea required rows={4} value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })} placeholder="Improve API reliability and test coverage" /></label>
             <label>Scope<input required value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} placeholder="src/api" /></label>
             <label>Target branch<div className="input-icon"><GitBranch size={16} /><input required value={form.targetBranch} onChange={(e) => setForm({ ...form, targetBranch: e.target.value })} /></div></label>

@@ -42,6 +42,18 @@ app.MapGet("/api/repository", (IWebHostEnvironment environment) =>
         ? Results.NotFound(new { error = "The API is not running inside a Git repository." })
         : Results.Ok(new { repositoryPath });
 });
+app.MapPost("/api/repository/select", async (CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var repositoryPath = await RepositoryDiscovery.SelectDirectoryAsync(cancellationToken);
+        return repositoryPath is null ? Results.NoContent() : Results.Ok(new { repositoryPath });
+    }
+    catch (PlatformNotSupportedException exception)
+    {
+        return Results.Json(new { error = exception.Message }, statusCode: StatusCodes.Status501NotImplemented);
+    }
+});
 app.MapGet("/api/evolutions", async (IEvolutionStore store, CancellationToken cancellationToken) =>
     Results.Ok(await store.ListAsync(cancellationToken)));
 app.MapGet("/api/evolutions/{id:guid}", async (Guid id, IEvolutionStore store, CancellationToken cancellationToken) =>
