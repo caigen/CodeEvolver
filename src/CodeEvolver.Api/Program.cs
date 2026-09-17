@@ -1,4 +1,5 @@
 using CodeEvolver.Api;
+using Microsoft.VisualBasic.FileIO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -14,10 +15,12 @@ builder.Services.AddSingleton<IEvolutionStore>(services =>
         ? ActivatorUtilities.CreateInstance<CassandraEvolutionStore>(services)
         : ActivatorUtilities.CreateInstance<JsonEvolutionStore>(services));
 builder.Services.AddSingleton<EvolutionCoordinator>();
+builder.Services.AddSingleton<CopilotAgentRunner>();
+builder.Services.AddSingleton<DataAnalyzer>();
 builder.Services.AddSingleton<IAgentRunner>(services =>
     builder.Configuration["Agent:Provider"]?.Equals("local", StringComparison.OrdinalIgnoreCase) == true
         ? new LocalAgentRunner()
-        : ActivatorUtilities.CreateInstance<CopilotAgentRunner>(services));
+        : services.GetRequiredService<CopilotAgentRunner>());
 builder.Services.AddHostedService<EventMonitor>();
 
 var app = builder.Build();
@@ -53,6 +56,28 @@ app.MapPost("/api/repository/select", async (CancellationToken cancellationToken
     {
         return Results.Json(new { error = exception.Message }, statusCode: StatusCodes.Status501NotImplemented);
     }
+});
+app.MapPost("/api/data-analysis", async (HttpRequest request, DataAnalyzer analyzer, CancellationToken cancellationToken) =>
+{
+    if (!request.HasFormContentType) return Results.BadRequest(new { error = "Upload a CSV or JSON file." });
+    var form = await request.ReadFormAsync(cancellationToken);
+    var file = form.Files.GetFile("file");
+    var repositoryPath = form["repositoryPath"].ToString();
+    if (file is null) return Results.BadRequest(new { error = "Select a CSV or JSON file." });
+    try
+    {
+        var run = await analyzer.StartAsync(file, repositoryPath, cancellationToken);
+        return Results.Accepted($"/api/data-analysis/{run.Id}", run);
+    }
+    catch (Exception exception) when (exception is InvalidOperationException or DirectoryNotFoundException or JsonException or MalformedLineException)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+}).DisableAntiforgery();
+app.MapGet("/api/data-analysis/{id:guid}", (Guid id, DataAnalyzer analyzer) =>
+{
+    var run = analyzer.Get(id);
+    return run is null ? Results.NotFound() : Results.Ok(run);
 });
 app.MapGet("/api/evolutions", async (IEvolutionStore store, CancellationToken cancellationToken) =>
     Results.Ok(await store.ListAsync(cancellationToken)));

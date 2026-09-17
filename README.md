@@ -27,6 +27,8 @@ npm run dev --prefix .\src\code-evolver-web
 
 Open http://localhost:5173. Runtime state is stored in `src/CodeEvolver.Api/data/evolutions.json` by default. Install and authenticate the standalone GitHub Copilot CLI before starting the API. Copilot is the default agent and runs non-interactively in the selected repository, where it can edit files and run commands. The final phase attempts a commit, push, and pull request; Git credentials and repository hosting access must already be configured. The UI's Stop action prevents pending phases from starting, but cannot interrupt a CLI phase already in progress.
 
+Before creating an evolution, the Data Analyzer Agent Team can profile a CSV or JSON file up to 5 MB. Purpose, Insight, Evolution Direction, and Summary agents run in order and report through the existing event timeline before proposing one direction with key points. The server sends Copilot a bounded profile containing column names, completeness, cardinality, and numeric statistics rather than raw row values. Review and apply the recommendation to populate the editable evolution direction.
+
 For UI development without autonomous repository changes, set `Agent__Provider=local` to use the lifecycle simulator explicitly. Set `Agent__Copilot__MaxAiCredits` only when a per-phase credit limit is required; current Copilot CLI versions require at least 30 credits.
 
 ## Self-host safely

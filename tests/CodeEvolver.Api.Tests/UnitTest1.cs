@@ -111,6 +111,31 @@ public sealed class EvolutionLifecycleTests
     }
 
     [Fact]
+    public void DataAnalyzer_ParsesStructuredRecommendation()
+    {
+        var result = DataAnalyzer.ParseResult("""
+            ```json
+            {"direction":"Improve import validation","keyPoints":["Missing values are common","Amounts vary widely","Automate anomaly checks"]}
+            ```
+            """);
+
+        Assert.Equal("Improve import validation", result.Direction);
+        Assert.Equal(3, result.KeyPoints.Count);
+    }
+
+    [Fact]
+    public void DataAnalyzer_CreatesFourAgentTimelineInOrder()
+    {
+        var events = DataAnalyzer.CreateEvents();
+
+        Assert.Equal(4, events.Count);
+        Assert.Equal(
+            ["data-purpose.started", "data-insight.started", "evolution-direction.started", "analysis-summary.started"],
+            events.Select(item => item.Type));
+        Assert.All(events, item => Assert.Equal(EvolutionEventStatus.Pending, item.Status));
+    }
+
+    [Fact]
     public void ResolveExecutable_FindsWindowsCommandShim()
     {
         var directory = Directory.CreateTempSubdirectory();

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Activity, ArrowRight, Bot, Check, CircleStop, Clock3, FilePenLine, FolderOpen, GitBranch, Play, Plus, RefreshCw, Save, Server, Timer, Trash2, X, XCircle } from 'lucide-react'
+import { Activity, ArrowRight, Bot, Check, CircleStop, Clock3, FilePenLine, FileUp, FolderOpen, GitBranch, Play, Plus, RefreshCw, Save, Server, Sparkles, Timer, Trash2, X, XCircle } from 'lucide-react'
 import './App.css'
 
 type EvolutionStatus = 'draft' | 'running' | 'stopRequested' | 'stopped' | 'completed' | 'failed'
@@ -9,6 +9,7 @@ type WorkItem = { id: string; title: string; description: string; status: string
 type EvolutionEvent = { id: string; type: string; status: EventStatus; detail?: string; prompt?: string; logs: string[]; createdAt: string; startedAt?: string; completedAt?: string }
 type AgentState = 'working' | 'done' | 'queued' | 'waiting' | 'stopped' | 'failed'
 type AgentMember = { name: string; startEvent: string; completedEvent: string }
+type DataAnalysis = { id: string; fileName: string; status: 'running' | 'completed' | 'failed'; direction?: string; keyPoints: string[]; error?: string; events: EvolutionEvent[] }
 type Evolution = {
   id: string
   repositoryPath: string
@@ -35,6 +36,12 @@ const agentMembers: AgentMember[] = [
   { name: 'Reviewer agent', startEvent: 'review.started', completedEvent: 'review.completed' },
   { name: 'Gate agent', startEvent: 'gate.started', completedEvent: 'gate.completed' },
   { name: 'Merge agent', startEvent: 'change.merged', completedEvent: 'change.merged' },
+]
+const dataAgentMembers: AgentMember[] = [
+  { name: 'Purpose agent', startEvent: 'data-purpose.started', completedEvent: 'data-purpose.started' },
+  { name: 'Insight agent', startEvent: 'data-insight.started', completedEvent: 'data-insight.started' },
+  { name: 'Direction agent', startEvent: 'evolution-direction.started', completedEvent: 'evolution-direction.started' },
+  { name: 'Summary agent', startEvent: 'analysis-summary.started', completedEvent: 'analysis-summary.started' },
 ]
 
 const getAgentState = (events: EvolutionEvent[], member: AgentMember): { state: AgentState; eventType: string } => {
@@ -70,6 +77,17 @@ const formatHeartbeat = (start?: string, now = Date.now()) => {
 
 const formatTimestamp = (value?: string) => value ? new Date(value).toLocaleString() : 'Not recorded'
 
+const AgentRoster = ({ members, events }: { members: AgentMember[]; events: EvolutionEvent[] }) => <div className="roster-grid">
+  {members.map((member) => {
+    const agent = getAgentState(events, member)
+    return <div className={`agent-member ${agent.state}`} key={member.startEvent}><span className="agent-status" /><div><strong>{member.name}</strong><small>{agent.eventType.replaceAll('.', ' ')} · {agent.state}</small></div></div>
+  })}
+</div>
+
+const EventTimeline = ({ events }: { events: EvolutionEvent[] }) => <div className="timeline">
+  {[...events].reverse().map((item) => <div className={`event ${item.status}`} key={item.id}><span className="event-icon">{item.status === 'completed' ? <Check size={13} /> : item.status === 'failed' ? <XCircle size={13} /> : <Clock3 size={13} />}</span><details open><summary><strong>{item.type.replaceAll('.', ' ')}</strong><small>{item.status} · {formatTimestamp(item.startedAt ?? item.createdAt)}</small></summary><div className="event-detail"><dl><div><dt>Created</dt><dd>{formatTimestamp(item.createdAt)}</dd></div><div><dt>Started</dt><dd>{formatTimestamp(item.startedAt)}</dd></div><div><dt>Completed</dt><dd>{formatTimestamp(item.completedAt)}</dd></div></dl>{item.prompt && <><h4>GitHub Copilot prompt</h4><pre>{item.prompt}</pre></>}{item.logs.length > 0 && <><h4>Logs</h4><pre>{item.logs.join('\n\n')}</pre></>}{item.detail && <><h4>Result</h4><pre>{item.detail}</pre></>}</div></details></div>)}
+</div>
+
 function App() {
   const [evolutions, setEvolutions] = useState<Evolution[]>([])
   const [selectedId, setSelectedId] = useState<string>()
@@ -77,6 +95,9 @@ function App() {
   const [editingId, setEditingId] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [selectingRepository, setSelectingRepository] = useState(false)
+  const [dataFile, setDataFile] = useState<File>()
+  const [analyzingData, setAnalyzingData] = useState(false)
+  const [dataAnalysis, setDataAnalysis] = useState<DataAnalysis>()
   const [error, setError] = useState('')
   const [now, setNow] = useState(0)
   const selected = evolutions.find((item) => item.id === selectedId) ?? evolutions[0]
@@ -117,6 +138,43 @@ function App() {
       setSelectingRepository(false)
     }
   }
+
+  const analyzeData = async () => {
+    if (!dataFile) return
+    setAnalyzingData(true)
+    setDataAnalysis(undefined)
+    try {
+      const body = new FormData()
+      body.append('file', dataFile)
+      body.append('repositoryPath', form.repositoryPath)
+      const response = await fetch(`${apiUrl}/data-analysis`, { method: 'POST', body })
+      if (!response.ok) throw new Error(await readError(response, 'Could not analyze the data file.'))
+      setDataAnalysis(await response.json() as DataAnalysis)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not analyze the data file.')
+    } finally {
+      setAnalyzingData(false)
+    }
+  }
+
+  const applyDataAnalysis = () => {
+    if (!dataAnalysis?.direction) return
+    const keyPoints = dataAnalysis.keyPoints.map((point) => `- ${point}`).join('\n')
+    setForm((current) => ({ ...current, direction: `${dataAnalysis.direction}\n\nKey points:\n${keyPoints}` }))
+  }
+
+  const analysisId = dataAnalysis?.id
+  const analysisStatus = dataAnalysis?.status
+  useEffect(() => {
+    if (!analysisId || analysisStatus !== 'running') return
+    const refreshAnalysis = async () => {
+      const response = await fetch(`${apiUrl}/data-analysis/${analysisId}`)
+      if (response.ok) setDataAnalysis(await response.json() as DataAnalysis)
+    }
+    const timer = window.setInterval(() => void refreshAnalysis(), 1000)
+    return () => window.clearInterval(timer)
+  }, [analysisId, analysisStatus])
 
   useEffect(() => {
     void refresh()
@@ -222,8 +280,39 @@ function App() {
       {error && <div className="error-banner"><XCircle size={18} />{error}<button onClick={() => void refresh()}><RefreshCw size={16} />Retry</button></div>}
 
       <div className="workspace">
-        <aside>
+        <section className="workspace-row analyzer-workspace">
+        <aside className="workspace-sidebar">
+          <section className="data-analyzer">
+            <div className="area-heading"><span>Analyzer</span><strong>Prepare an evolution from data</strong></div>
+            <div className="section-title"><Sparkles size={17} /><h2>Data Analyzer</h2></div>
+            <label className="data-upload">
+              <FileUp size={18} />
+              <span><strong>{dataFile?.name ?? 'Select data file'}</strong><small>CSV or JSON, up to 5 MB</small></span>
+              <input type="file" accept=".csv,.json,application/json,text/csv" onChange={(event) => { setDataFile(event.target.files?.[0]); setDataAnalysis(undefined) }} />
+            </label>
+            <button type="button" className="secondary analyze-button" disabled={!dataFile || !form.repositoryPath || analyzingData || dataAnalysis?.status === 'running'} onClick={() => void analyzeData()}><Sparkles size={16} />{analyzingData || dataAnalysis?.status === 'running' ? 'Agent team analyzing...' : 'Analyze data'}</button>
+            {dataAnalysis?.status === 'failed' && <div className="analysis-error"><XCircle size={15} />{dataAnalysis.error}</div>}
+            {dataAnalysis?.status === 'completed' && dataAnalysis.direction && <div className="analysis-result"><strong>{dataAnalysis.direction}</strong><ul>{dataAnalysis.keyPoints.map((point) => <li key={point}>{point}</li>)}</ul><button type="button" className="primary" onClick={applyDataAnalysis}><ArrowRight size={16} />Apply to evolution</button></div>}
+          </section>
+        </aside>
+        <section className="detail analyzer-detail">
+          <div className="content-grid">
+            <section className="panel">
+              <div className="roster-title"><Sparkles size={17} /><h3>Analyzer Team</h3>{dataAnalysis && <span className={`analysis-status ${dataAnalysis.status}`}>{dataAnalysis.status}</span>}</div>
+              <AgentRoster members={dataAgentMembers} events={dataAnalysis?.events ?? []} />
+            </section>
+            <section className="panel timeline-panel">
+              <div className="section-title"><Clock3 size={17} /><h3>Analysis Timeline</h3></div>
+              {dataAnalysis ? <EventTimeline events={dataAnalysis.events} /> : <p className="empty">Analysis events will appear after a data file is submitted.</p>}
+            </section>
+          </div>
+        </section>
+        </section>
+
+        <section className="workspace-row evolution-workspace">
+        <aside className="workspace-sidebar">
           <form onSubmit={createEvolution}>
+            <div className="area-heading"><span>Evolution</span><strong>Define and run the code change</strong></div>
             <div className="section-title">{editingId ? <FilePenLine size={17} /> : <Plus size={17} />}<h2>{editingId ? 'Edit evolution' : 'New evolution'}</h2></div>
             <label>Cloned repository path<div className="path-input"><input required value={form.repositoryPath} onChange={(e) => setRepositoryPath(e.target.value)} placeholder="C:\work\repository" /><button type="button" className="icon-button" title="Select repository folder" disabled={selectingRepository} onClick={() => void selectRepository()}><FolderOpen size={17} /></button></div></label>
             <label>Evolution direction<textarea required rows={4} value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })} placeholder="Improve API reliability and test coverage" /></label>
@@ -275,24 +364,18 @@ function App() {
               <section className="panel">
                 <div className="agent-roster">
                   <div className="roster-title"><Bot size={17} /><h3>Agent team</h3></div>
-                  <div className="roster-grid">
-                    {agentMembers.map((member) => {
-                      const agent = getAgentState(selected.events, member)
-                      return <div className={`agent-member ${agent.state}`} key={member.startEvent}><span className="agent-status" /><div><strong>{member.name}</strong><small>{agent.eventType.replaceAll('.', ' ')} · {agent.state}</small></div></div>
-                    })}
-                  </div>
+                  <AgentRoster members={agentMembers} events={selected.events} />
                 </div>
                 <div className="section-title"><Check size={17} /><h3>Agent day plan</h3></div>
                 {selected.workItems.length === 0 ? <p className="empty">The plan will appear when the planning agent completes.</p> : selected.workItems.map((item, index) => <div className="work-item" key={item.id}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.status}</small><p>{item.description}</p>{item.result && <pre>{item.result}</pre>}</div></div>)}
               </section>
               <section className="panel timeline-panel">
                 <div className="section-title"><Clock3 size={17} /><h3>Event timeline</h3></div>
-                <div className="timeline">
-                  {[...selected.events].reverse().map((item) => <div className={`event ${item.status}`} key={item.id}><span className="event-icon">{item.status === 'completed' ? <Check size={13} /> : item.status === 'failed' ? <XCircle size={13} /> : <Clock3 size={13} />}</span><details open><summary><strong>{item.type.replaceAll('.', ' ')}</strong><small>{item.status} · {formatTimestamp(item.startedAt ?? item.createdAt)}</small></summary><div className="event-detail"><dl><div><dt>Created</dt><dd>{formatTimestamp(item.createdAt)}</dd></div><div><dt>Started</dt><dd>{formatTimestamp(item.startedAt)}</dd></div><div><dt>Completed</dt><dd>{formatTimestamp(item.completedAt)}</dd></div></dl>{item.prompt && <><h4>GitHub Copilot prompt</h4><pre>{item.prompt}</pre></>}{item.logs.length > 0 && <><h4>Logs</h4><pre>{item.logs.join('\n\n')}</pre></>}{item.detail && <><h4>Result</h4><pre>{item.detail}</pre></>}</div></details></div>)}
-                </div>
+                <EventTimeline events={selected.events} />
               </section>
             </div>
           </>}
+        </section>
         </section>
       </div>
     </main>

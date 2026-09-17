@@ -9,6 +9,52 @@ public sealed class CopilotAgentRunner(IConfiguration configuration, ILogger<Cop
 {
     public string GetPrompt(Evolution evolution, string eventType) => BuildPrompt(evolution, eventType);
 
+    public Task<string> RunPromptAsync(string workingDirectory, string prompt, CancellationToken cancellationToken) =>
+        RunPromptAsync(workingDirectory, prompt, null, cancellationToken);
+
+    public async Task<string> RunPromptAsync(string workingDirectory, string prompt, Func<string, CancellationToken, Task>? reportProgress, CancellationToken cancellationToken)
+    {
+        var command = ResolveCommand(configuration["Agent:Copilot:Executable"] ?? "copilot");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = command.FileName,
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var argument in command.PrefixArguments) startInfo.ArgumentList.Add(argument);
+        foreach (var argument in BuildArguments(prompt)) startInfo.ArgumentList.Add(argument);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(configuration.GetValue("Agent:Copilot:TimeoutMinutes", 20)));
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Could not start GitHub Copilot CLI.");
+        var output = new StringBuilder();
+        var errorTask = process.StandardError.ReadToEndAsync(linkedCancellation.Token);
+        try
+        {
+            while (await process.StandardOutput.ReadLineAsync(linkedCancellation.Token) is { } line)
+            {
+                output.AppendLine(line);
+                var progress = AgentOutputParser.GetProgress(line);
+                if (progress is not null && reportProgress is not null)
+                    await reportProgress(progress, linkedCancellation.Token);
+            }
+            await process.WaitForExitAsync(linkedCancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            await TerminateProcessAsync(process);
+            if (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                throw new TimeoutException("The Data Analyzer Agent exceeded its time limit.");
+            throw;
+        }
+        var error = RedactSecrets((await errorTask).Trim(), configuration["Agent:Copilot:SecretEnvironmentVariables"]);
+        if (process.ExitCode != 0) throw new InvalidOperationException($"Copilot CLI failed ({process.ExitCode}): {error}");
+        return AgentOutputParser.GetFinalResponse(output.ToString())
+            ?? throw new InvalidOperationException("The Data Analyzer Agent returned no response.");
+    }
+
     public async Task<AgentResult> RunAsync(Evolution evolution, string eventType, Func<string, CancellationToken, Task>? reportProgress, CancellationToken cancellationToken)
     {
         if (!Directory.Exists(evolution.RepositoryPath))
