@@ -130,7 +130,7 @@ async function record() {
     'Final reporting must state exactly what changed and what validation actually ran. Publishing is disabled.',
   ].join('\n\n')
   await page.getByLabel('Evolution direction').fill(direction)
-  await page.getByLabel('Scope', { exact: true }).fill('src/code-evolver-web/src')
+  await page.getByLabel('Scope Path', { exact: true }).fill('src/code-evolver-web/src')
   await page.getByLabel('Target branch').fill('main')
   const createResponse = page.waitForResponse((reply) => reply.url() === `${apiUrl}/api/evolutions` && reply.request().method() === 'POST')
   await page.getByRole('button', { name: 'Create evolution', exact: true }).click()

@@ -329,7 +329,7 @@ function App() {
         <section className="workspace-row analyzer-workspace">
         <aside className="workspace-sidebar">
           <section className="data-analyzer">
-            <div className="area-heading"><span>Analyzer</span><strong>Prepare an evolution from data</strong></div>
+            <div className="area-heading"><h2>Analyzer</h2><strong>Prepare an evolution from data</strong></div>
             <div className="section-title"><Sparkles size={17} /><h2>Data Analyzer</h2></div>
             <label className="data-upload">
               <FileUp size={18} />
@@ -358,12 +358,12 @@ function App() {
         <section className="workspace-row evolution-workspace">
         <aside className="workspace-sidebar">
           <form onSubmit={createEvolution}>
-            <div className="area-heading"><span>Evolution</span><strong>Define and run the code change</strong></div>
+            <div className="area-heading"><h2>Evolution</h2><strong>Define and run the code change</strong></div>
             <div className="section-title">{editingId ? <FilePenLine size={17} /> : <Plus size={17} />}<h2>{editingId ? 'Edit evolution' : 'New evolution'}</h2></div>
             <label>Cloned repository path<div className="path-input"><input required value={form.repositoryPath} onChange={(e) => setRepositoryPath(e.target.value)} placeholder="C:\work\repository" /><button type="button" className="icon-button" title="Select repository folder" disabled={selectingRepository} onClick={() => void selectRepository()}><FolderOpen size={17} /></button></div></label>
             <label>Direction preset<select value={directionOptions.includes(form.direction) ? form.direction : ''} onChange={(event) => { if (event.target.value) setForm({ ...form, direction: event.target.value }) }}><option value="">Custom direction</option>{directionOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
             <label>Evolution direction<textarea required rows={4} value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })} placeholder="Improve API reliability and test coverage" /></label>
-            <label>Scope<select value={scopeOptions.includes(form.scope) ? form.scope : ''} onChange={(event) => { if (event.target.value) setForm({ ...form, scope: event.target.value }) }}><option value="">Custom scope</option>{scopeOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select><input required value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} placeholder="src/api" aria-label="Custom scope" /></label>
+            <div className="scope-path"><label htmlFor="scope-path">Scope Path</label><select aria-label="Scope Path presets" value={scopeOptions.includes(form.scope) ? form.scope : ''} onChange={(event) => { if (event.target.value) setForm({ ...form, scope: event.target.value }) }}><option value="">Custom subpath</option>{scopeOptions.map((option) => <option key={option} value={option}>{option === '.' ? '. (repository root)' : option}</option>)}</select><input id="scope-path" required value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} placeholder="Relative subpath, e.g. src/api" title="Path relative to the cloned repository" /></div>
             <label>Target branch<div className="selection-with-custom"><select value={branchOptions.includes(form.targetBranch) ? form.targetBranch : ''} onChange={(event) => { if (event.target.value) setForm({ ...form, targetBranch: event.target.value }) }} aria-label="Known target branch"><option value="">Custom branch</option>{branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select><div className="input-icon"><GitBranch size={16} /><input required value={form.targetBranch} onChange={(e) => setForm({ ...form, targetBranch: e.target.value })} aria-label="Custom target branch" /></div></div></label>
             <div className="form-actions">
               {editingId && <button type="button" className="secondary" disabled={busy} onClick={cancelEdit}><X size={17} />Cancel</button>}

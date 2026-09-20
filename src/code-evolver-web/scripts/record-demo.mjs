@@ -215,7 +215,7 @@ try {
   assert.ok((await page.getByLabel('Evolution direction').inputValue()).startsWith(direction))
   const requestedDirection = `${await page.getByLabel('Evolution direction').inputValue()}\n\n${logRequest}`
   await page.getByLabel('Evolution direction').fill(requestedDirection)
-  await page.getByLabel('Scope', { exact: true }).fill('src/code-evolver-web')
+  await page.getByLabel('Scope Path', { exact: true }).fill('src/code-evolver-web')
   await page.getByLabel('Target branch').fill('main')
   await hold(3)
   await click(page.getByRole('button', { name: 'Create evolution', exact: true }))
