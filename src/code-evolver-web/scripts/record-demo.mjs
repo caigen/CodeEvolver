@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { performance } from 'node:perf_hooks'
@@ -15,6 +15,7 @@ const direction = 'Improve checkout reliability and error recovery.'
 const repositoryPath = 'C:\\demo\\storefront'
 const chapters = []
 const errors = []
+let narration
 let evolution
 let analysis
 let server
@@ -22,14 +23,40 @@ let browser
 let context
 let recordingStart
 
-function runFfmpeg(args) {
+function runProcess(executable, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.FFMPEG_PATH || ffmpegPath || 'ffmpeg', args, { cwd: output, windowsHide: true })
+    const child = spawn(executable, args, { cwd: output, windowsHide: true })
     let log = ''
+    child.stdout.on('data', (data) => { log += data.toString() })
     child.stderr.on('data', (data) => { log += data.toString() })
     child.on('error', reject)
-    child.on('close', (code) => code === 0 ? resolve(log) : reject(new Error(`FFmpeg failed (${code}):\n${log}`)))
+    child.on('close', (code) => code === 0 ? resolve(log) : reject(new Error(`${path.basename(executable)} failed (${code}):\n${log}`)))
   })
+}
+
+const runFfmpeg = (args) => runProcess(process.env.FFMPEG_PATH || ffmpegPath || 'ffmpeg', args)
+
+async function generateNarration() {
+  assert.equal(process.platform, 'win32', 'Local narration requires Windows. Set DEMO_NARRATION=off for a silent demo.')
+  const directory = path.join(output, 'narration')
+  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
+  const log = await runProcess(powershell, [
+    '-NoProfile', '-NonInteractive', '-File', path.join(root, 'scripts/synthesize-narration.ps1'),
+    '-InputPath', path.join(root, 'scripts/narration.json'), '-OutputDirectory', directory,
+  ])
+  console.log(log.trim())
+  const metadataPath = path.join(directory, 'narration.json')
+  const metadata = JSON.parse((await readFile(metadataPath, 'utf8')).replace(/^\uFEFF/, ''))
+  assert.equal(metadata.segments.length, 6, 'Expected one narration clip per demo chapter')
+  for (const segment of metadata.segments) {
+    const probe = await runFfmpeg(['-hide_banner', '-nostats', '-i', path.join(directory, segment.file), '-af', 'volumedetect', '-progress', 'pipe:2', '-f', 'null', '-'])
+    const elapsed = [...probe.matchAll(/^out_time_us=(\d+)/gm)].at(-1)
+    segment.duration = Number(elapsed?.[1]) / 1000000
+    assert.ok(Number.isFinite(segment.duration) && segment.duration > 0, `Invalid narration duration: ${segment.file}`)
+    assert.ok(Number(probe.match(/max_volume: ([-\d.]+) dB/)?.[1]) > -60, `Narration is silent: ${segment.file}`)
+  }
+  await writeFile(metadataPath, JSON.stringify(metadata, null, 2))
+  return metadata
 }
 
 function event(type, status = 'completed', detail = 'Simulated result for the recorded demonstration.') {
@@ -83,6 +110,7 @@ function subtitleTime(seconds) {
 await mkdir(output, { recursive: true })
 try {
   await runFfmpeg(['-version'])
+  if (process.env.DEMO_NARRATION !== 'off') narration = await generateNarration()
   server = await createServer({
     root,
     server: { host: '127.0.0.1', port: 0, open: false },
@@ -120,8 +148,17 @@ try {
   const video = page.video()
   const hold = (seconds) => page.waitForTimeout(seconds * 1000)
   const focusEvolution = () => page.locator('.evolution-workspace').evaluate((element) => element.scrollIntoView({ block: 'start', behavior: 'instant' }))
-  const chapter = (title) => {
-    chapters.push({ title, start: (performance.now() - recordingStart) / 1000 })
+  const finishNarration = async () => {
+    const current = chapters.at(-1)
+    if (!current?.narration) return
+    const remaining = current.start + current.narration.duration + 0.6 - (performance.now() - recordingStart) / 1000
+    if (remaining > 0) await hold(remaining)
+  }
+  const chapter = async (title) => {
+    await finishNarration()
+    const segment = narration?.segments[chapters.length]
+    if (narration) assert.equal(segment?.title, title, 'Narration must match the recorded chapter')
+    chapters.push({ title, start: (performance.now() - recordingStart) / 1000, narration: segment })
     console.log(`Recording: ${title}`)
   }
   const click = async (locator) => {
@@ -147,11 +184,11 @@ try {
     document.body.append(cursor)
     document.addEventListener('mousemove', (move) => { cursor.style.left = `${move.clientX}px`; cursor.style.top = `${move.clientY}px` })
   })
-  chapter('Code Evolver | From data to an evolution')
+  await chapter('Code Evolver | From data to an evolution')
   await frame('01-overview')
   await hold(3)
 
-  chapter('Upload feedback and run the analyzer team')
+  await chapter('Upload feedback and run the analyzer team')
   await page.locator('input[type=file]').setInputFiles({
     name: 'checkout-feedback.csv', mimeType: 'text/csv',
     buffer: Buffer.from('category,count\ncheckout_timeout,42\nunclear_error,28\nretry_request,19\n'),
@@ -167,7 +204,7 @@ try {
   await frame('02-analysis')
   await hold(4)
 
-  chapter('Apply the recommendation and create an evolution')
+  await chapter('Apply the recommendation and create an evolution')
   await click(page.getByRole('button', { name: 'Apply to evolution', exact: true }))
   assert.ok((await page.getByLabel('Evolution direction').inputValue()).startsWith(direction))
   await page.getByLabel('Scope', { exact: true }).fill('src/checkout')
@@ -179,7 +216,7 @@ try {
   await frame('03-draft')
   await hold(3)
 
-  chapter('Start the evolution and follow live agent activity')
+  await chapter('Start the evolution and follow live agent activity')
   await click(page.getByRole('button', { name: 'Start', exact: true }))
   await page.locator('.status-label.running').waitFor()
   await hold(3)
@@ -191,7 +228,7 @@ try {
   await frame('04-working')
   await hold(4)
 
-  chapter('Review the change and run the quality gate')
+  await chapter('Review the change and run the quality gate')
   evolution.events[2] = event('work-item.completed')
   evolution.events.push(event('review.completed'), event('gate.started', 'processing', 'Checking the proposed change and focused tests.'))
   await click(page.getByRole('button', { name: 'Refresh', exact: true }))
@@ -199,7 +236,7 @@ try {
   await focusEvolution()
   await hold(4)
 
-  chapter('Completed | Inspect the work item and event history')
+  await chapter('Completed | Inspect the work item and event history')
   evolution.events[evolution.events.length - 1] = event('gate.completed')
   evolution.events.push(event('change.merged', 'completed', 'Demo lifecycle complete. No files, commits, pushes or pull requests were created.'))
   evolution.status = 'completed'
@@ -213,6 +250,7 @@ try {
   await focusEvolution()
   await frame('06-results')
   await hold(4)
+  await finishNarration()
   assert.deepEqual(errors, [], 'Recording must not contain browser or route errors')
 
   const end = (performance.now() - recordingStart) / 1000
@@ -223,11 +261,29 @@ try {
   const duration = end - trim
   const subtitles = chapters.map((entry, index) => `${index + 1}\n${subtitleTime(entry.start - trim)} --> ${subtitleTime((chapters[index + 1]?.start ?? end) - trim)}\nSIMULATED DEMO - No real agent execution\n${entry.title}\n`).join('\n')
   await writeFile(path.join(output, 'chapters.srt'), subtitles)
-  await writeFile(path.join(output, 'chapters.json'), JSON.stringify({ simulated: true, viewport, duration, chapters }, null, 2))
-  console.log('Editing: trim startup, add chapter captions, fade in/out, encode H.264 MP4')
+  await writeFile(path.join(output, 'chapters.json'), JSON.stringify({ simulated: true, viewport, duration, voice: narration?.voice, chapters }, null, 2))
+  console.log('Editing: trim startup, add chapter captions, fade in/out, encode H.264 MP4' + (narration ? ' with English narration' : ''))
   const filter = `pad=iw:ih+120:0:0:color=0x172621,subtitles=chapters.srt:force_style='FontName=Arial,FontSize=9,Outline=0,Shadow=0,MarginV=7',fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.5)}:d=0.5`
-  await runFfmpeg(['-hide_banner', '-y', '-ss', String(trim), '-i', raw, '-t', String(duration), '-vf', filter, '-an', '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', '30', '-movflags', '+faststart', 'code-evolver-demo.mp4'])
-  await runFfmpeg(['-hide_banner', '-v', 'error', '-xerror', '-i', 'code-evolver-demo.mp4', '-f', 'null', '-'])
+  const audioInputs = narration ? narration.segments.flatMap((segment) => ['-i', path.join(output, 'narration', segment.file)]) : []
+  const audioOptions = ['-an']
+  if (narration) {
+    const delayed = chapters.map((entry, index) => {
+      assert.ok(entry.start + entry.narration.duration + 0.15 <= (chapters[index + 1]?.start ?? end), 'Narration must finish before the chapter ends')
+      return `[${index + 1}:a]aresample=48000,adelay=${Math.round((entry.start - trim + 0.15) * 1000)}:all=1[voice${index}]`
+    })
+    const mix = `${chapters.map((_, index) => `[voice${index}]`).join('')}amix=inputs=${chapters.length}:duration=longest:normalize=0,apad,atrim=duration=${duration}[narration]`
+    audioOptions.splice(0, 1, '-filter_complex', [...delayed, mix].join(';'), '-map', '0:v:0', '-map', '[narration]', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000')
+  }
+  await runFfmpeg(['-hide_banner', '-y', '-ss', String(trim), '-i', raw, ...audioInputs, '-t', String(duration), '-vf', filter, ...audioOptions, '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', '30', '-movflags', '+faststart', 'code-evolver-demo.mp4'])
+  await runFfmpeg(['-hide_banner', '-v', 'error', '-xerror', '-i', 'code-evolver-demo.mp4', '-map', '0:v:0', ...(narration ? ['-map', '0:a:0'] : []), '-f', 'null', '-'])
+  if (narration) {
+    const audioCheck = await runFfmpeg(['-hide_banner', '-i', 'code-evolver-demo.mp4', '-map', '0:a:0', '-af', 'volumedetect', '-f', 'null', '-'])
+    assert.ok(Number(audioCheck.match(/max_volume: ([-\d.]+) dB/)?.[1]) > -60, 'Final video must have an audible narration track')
+    console.log('Exporting WebM with Opus narration for players without AAC support')
+    await runFfmpeg(['-hide_banner', '-y', '-i', 'code-evolver-demo.mp4', '-map', '0:v:0', '-map', '0:a:0', '-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', '30', '-deadline', 'realtime', '-cpu-used', '6', '-row-mt', '1', '-c:a', 'libopus', '-b:a', '128k', 'code-evolver-demo-with-voice.webm'])
+    await runFfmpeg(['-hide_banner', '-v', 'error', '-xerror', '-i', 'code-evolver-demo-with-voice.webm', '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'])
+    console.log(`Voiced WebM: ${path.join(output, 'code-evolver-demo-with-voice.webm')}`)
+  }
   await runFfmpeg(['-hide_banner', '-y', '-ss', '2', '-i', 'code-evolver-demo.mp4', '-frames:v', '1', 'preview.png'])
   console.log(`Validated video: ${path.join(output, 'code-evolver-demo.mp4')}`)
 } finally {

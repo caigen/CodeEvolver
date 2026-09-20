@@ -1,0 +1,26 @@
+[
+  {
+    "title": "Code Evolver | From data to an evolution",
+    "text": "Welcome to Code Evolver. Turn feedback into a focused code improvement workflow. This demonstration uses simulated data. No real agents or repository changes are involved."
+  },
+  {
+    "title": "Upload feedback and run the analyzer team",
+    "text": "First, upload customer feedback and start the analyzer team. The analysis identifies checkout timeouts and unclear error messages, then recommends better recovery actions and focused tests."
+  },
+  {
+    "title": "Apply the recommendation and create an evolution",
+    "text": "Apply the recommendation to the evolution form. Choose the checkout scope and target branch, then create an evolution. The saved task is now ready to start."
+  },
+  {
+    "title": "Start the evolution and follow live agent activity",
+    "text": "Start the evolution to follow its progress. The scan and planning stages prepare a work item. The worker stage shows live activity as it handles checkout recovery."
+  },
+  {
+    "title": "Review the change and run the quality gate",
+    "text": "Next, the review and quality gate stages check the proposed change. Agent status and the event timeline make progress and results visible in one place."
+  },
+  {
+    "title": "Completed | Inspect the work item and event history",
+    "text": "The simulated evolution is complete. Inspect the finished work item and event history. In this demo, no files, commits, pushes, or pull requests were created."
+  }
+]

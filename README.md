@@ -48,7 +48,8 @@ Record the real web UI using isolated, simulated API responses. No API server,
 Copilot authentication, real repository, or database is required. This is a
 product walkthrough, not evidence of real agent execution or backend validation.
 
-One-time setup (Node.js 22 or newer):
+One-time setup (Node.js 22 or newer; Windows with an installed English desktop
+text-to-speech voice for narration):
 
 ```powershell
 npm ci --prefix .\src\code-evolver-web
@@ -62,7 +63,9 @@ npm run demo:record --prefix .\src\code-evolver-web
 ```
 
 The script starts an isolated Vite server on an available local port, records
-Chromium, and closes both automatically. It uploads sample checkout feedback,
+Chromium, and closes both automatically. Before recording, it uses Windows
+PowerShell and System.Speech to synthesize six English narration clips locally.
+No speech API, credentials, or cloud upload is involved. It uploads sample checkout feedback,
 shows analysis, applies the recommendation, creates an evolution, and steps
 through simulated scan, plan, work, review, gate, and completion states.
 All API requests are intercepted; no files are changed by agents and no commits,
@@ -72,18 +75,53 @@ uses the application's fallback fonts so recording does not require that service
 Each run creates a timestamped folder under `artifacts/demo/` (ignored by Git):
 
 - `code-evolver-demo.mp4`: 1920 x 1080, 30 fps H.264 with a dedicated subtitle
-    band, chapter captions, a persistent simulation label, and fade in/out.
-- `raw/`: original WebM recording, retained for further editing or debugging.
+    band, chapter captions, a persistent simulation label, fade in/out, and an
+    English AAC narration track.
+- `code-evolver-demo-with-voice.webm`: VP9 video with Opus narration, provided
+    for editor and browser players that do not support AAC audio.
+- `raw/`: original silent WebM recording, retained for further editing or
+    debugging. Narration is added only to the final exports above.
+- `narration/`: individual WAV clips and `narration.json` containing the voice,
+  spoken text, and measured audio durations.
 - `chapters.srt` and `chapters.json`: captions and recording timeline.
 - Numbered PNG screenshots and `preview.png`: visual review evidence.
 
 FFmpeg removes startup footage, encodes the final video, and checks that it can
 be decoded. The recording also fails on unexpected API requests, browser errors,
-or missing expected UI states. The video is silent; narration and music are not
-included. Timing varies slightly with machine speed (roughly 45 seconds).
+missing expected UI states, missing audio, or silent narration. Each chapter is
+held long enough for its narration to finish before the next chapter starts.
+Timing depends on the selected voice and machine speed. Music is not included.
+
+If the MP4 appears silent in an editor preview, try the final
+`code-evolver-demo-with-voice.webm` or open the MP4 in a system media player.
+Check that playback is unmuted. Do not use the silent file under `raw/` for
+the narrated demo. The voiced WebM is not generated with `DEMO_NARRATION=off`.
+
+The first available English desktop voice (sorted by name) is selected by
+default. To select a particular installed voice:
+
+```powershell
+$env:DEMO_VOICE = 'Microsoft David Desktop'
+npm run demo:record --prefix .\src\code-evolver-web
+Remove-Item Env:DEMO_VOICE
+```
+
+Only voices exposed to Windows desktop System.Speech are supported. If none is
+available, install an English Windows text-to-speech voice and rerun. The script
+reports an error instead of silently producing an unvoiced video. For the
+original silent workflow (also usable on non-Windows systems):
+
+```powershell
+$env:DEMO_NARRATION = 'off'
+npm run demo:record --prefix .\src\code-evolver-web
+Remove-Item Env:DEMO_NARRATION
+```
 
 Edit `src/code-evolver-web/scripts/record-demo.mjs` to change the sample data,
 chapter text, actions, or pauses. Chapter text is English to match the UI.
+Edit the six `text` entries in `src/code-evolver-web/scripts/narration.json`
+to change the spoken script. Keep its chapter titles in sync with the recorder;
+audio durations and chapter holds are recalculated automatically on each run.
 Dependencies include a local FFmpeg binary; optionally set `FFMPEG_PATH` to your
 own executable built with `libx264` and the `subtitles` filter. Initial npm and
 Chromium installation require internet access. If recording fails, fix the
