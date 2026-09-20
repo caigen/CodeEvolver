@@ -1,30 +1,18 @@
 [
   {
-    "title": "Code Evolver | Evolving its own user experience",
-    "text": "Code Evolver can target its own repository. This walkthrough uses the current Code Evolver checkout and simulated agent results. No real agents will run or change repository files."
+    "title": "Code Evolver | Less manual interaction, multiple tasks",
+    "text": "Code Evolver reduces the need for repeated human interaction by coordinating agents across multiple development tasks. You provide the goal; the teams handle the workflow."
   },
   {
-    "title": "Analyze JSON feedback | GitHub-style colors and selection controls",
-    "text": "Upload the JSON feedback file. It requests GitHub-style colors and selection controls wherever human input has known choices. The simulated analyzer turns these requests into an evolution direction."
+    "title": "Analyzer Agent Team | From data to direction",
+    "text": "Start with data. The Analyzer Agent Team examines its profile, identifies insights, and recommends a direction for improving your repository."
   },
   {
-    "title": "Target this repository | Add log search and CSV export to the request",
-    "text": "Apply the recommendation to this repository. Add another requirement: search agent team logs and export them as CSV for review. Limit the scope to the web application, then create the evolution."
-  },
-  {
-    "title": "Start the evolution and follow live agent activity",
-    "text": "Start the simulated evolution. The plan contains three work items: GitHub-style colors, selection controls for human input, and searchable logs with CSV export. Follow the worker stage through the live timeline."
-  },
-  {
-    "title": "Review the change and run the quality gate",
-    "text": "The simulated review and gate stages illustrate checks for accessible colors, input selection, log filtering, and CSV formatting. These are proposed improvements, not features implemented by this recording."
-  },
-  {
-    "title": "Completed | Inspect the work item and event history",
-    "text": "The simulated evolution is complete. Inspect the finished work item and event history. In this demo, no files, commits, pushes, or pull requests were created."
+    "title": "Code Evolver Agent Team | From direction to changes",
+    "text": "Start with a direction. The Code Evolver Agent Team scans, plans, implements, reviews, and validates changes, turning your goal into repository improvements."
   },
   {
     "title": "Visit https://github.com/caigen/CodeEvolver",
-    "text": "Explore Code Evolver on GitHub. Visit github dot com, slash caigen, slash Code Evolver. The link is shown on screen and included with this demo."
+    "text": "Explore Code Evolver on GitHub. Visit github dot com, slash caigen, slash Code Evolver. Use your own direction or feedback data to guide your next repository improvement."
   }
 ]

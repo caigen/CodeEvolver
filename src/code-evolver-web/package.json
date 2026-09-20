@@ -9,7 +9,6 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "demo:install": "playwright install chromium",
-    "demo:record": "node scripts/record-demo.mjs",
     "demo:real": "node scripts/record-real-demo.mjs"
   },
   "dependencies": {

@@ -1,12 +1,12 @@
 [
   {
-    "category": "appearance",
-    "feedback": "Use a GitHub-like color style for the Code Evolver user interface.",
-    "requestedOutcome": "Use neutral surfaces, clear borders, accessible contrast, and restrained accent colors."
+    "category": "user-flow",
+    "feedback": "Fix user-flow bugs and improve the experience when turning analyzer results into an evolution.",
+    "requestedOutcome": "Investigate the analyze, apply, create, and start journey; fix a reproducible issue and keep the repository, direction, and scope consistent."
   },
   {
-    "category": "human-input",
-    "feedback": "For human input, support selection controls whenever possible.",
-    "requestedOutcome": "Offer known choices with select controls while retaining free-form input where needed."
+    "category": "usability",
+    "feedback": "Make it easier to understand the next action and recover from invalid input without losing entered work.",
+    "requestedOutcome": "Provide clear validation and preserve user input during the evolution workflow, while retaining the existing visual design."
   }
 ]
