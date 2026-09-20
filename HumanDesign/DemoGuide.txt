@@ -9,9 +9,7 @@
 
 # Upgrade the narration.json and demo-feedback.json 1st
 Generate one json as feedback:
-* UX color should use github like style. 
-* For human input, support select when possible.
-* For agent team logs, support search and export to csv file for review.
+* FiX US flow bug and improve experience.
 
 # Evolution Target
  I cloned one other copy under /D/work/CodeEvolver for demo.  Pls use that copy for demo.
