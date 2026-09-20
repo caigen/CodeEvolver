@@ -1,0 +1,7 @@
+1. Generate one json as feedback:
+* UX color should use github like style. 
+* For human input, support select when possible.
+
+2. For agent team logs, support search and export to csv file for review.
+
+3. Use /D/work/CodeEveolver for demo.
