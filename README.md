@@ -42,6 +42,53 @@ Open http://localhost:5173. Runtime state is stored in `src/CodeEvolver.Api/data
 
 For UI development without autonomous repository changes, set `Agent__Provider=local` to use the lifecycle simulator explicitly. Set `Agent__Copilot__MaxAiCredits` only when a per-phase credit limit is required; current Copilot CLI versions require at least 30 credits.
 
+## Record an automated demo
+
+Record the real web UI using isolated, simulated API responses. No API server,
+Copilot authentication, real repository, or database is required. This is a
+product walkthrough, not evidence of real agent execution or backend validation.
+
+One-time setup (Node.js 22 or newer):
+
+```powershell
+npm ci --prefix .\src\code-evolver-web
+npm run demo:install --prefix .\src\code-evolver-web
+```
+
+Record and edit a new video:
+
+```powershell
+npm run demo:record --prefix .\src\code-evolver-web
+```
+
+The script starts an isolated Vite server on an available local port, records
+Chromium, and closes both automatically. It uploads sample checkout feedback,
+shows analysis, applies the recommendation, creates an evolution, and steps
+through simulated scan, plan, work, review, gate, and completion states.
+All API requests are intercepted; no files are changed by agents and no commits,
+pushes, or pull requests are created. External requests are blocked; Google Fonts
+uses the application's fallback fonts so recording does not require that service.
+
+Each run creates a timestamped folder under `artifacts/demo/` (ignored by Git):
+
+- `code-evolver-demo.mp4`: 1920 x 1080, 30 fps H.264 with a dedicated subtitle
+    band, chapter captions, a persistent simulation label, and fade in/out.
+- `raw/`: original WebM recording, retained for further editing or debugging.
+- `chapters.srt` and `chapters.json`: captions and recording timeline.
+- Numbered PNG screenshots and `preview.png`: visual review evidence.
+
+FFmpeg removes startup footage, encodes the final video, and checks that it can
+be decoded. The recording also fails on unexpected API requests, browser errors,
+or missing expected UI states. The video is silent; narration and music are not
+included. Timing varies slightly with machine speed (roughly 45 seconds).
+
+Edit `src/code-evolver-web/scripts/record-demo.mjs` to change the sample data,
+chapter text, actions, or pauses. Chapter text is English to match the UI.
+Dependencies include a local FFmpeg binary; optionally set `FFMPEG_PATH` to your
+own executable built with `libx264` and the `subtitles` filter. Initial npm and
+Chromium installation require internet access. If recording fails, fix the
+reported issue and rerun; existing outputs are retained in their own folders.
+
 ## Self-host safely
 
 Run Code Evolver against its own isolated worktree with publishing disabled so the final phase does not commit, push, or open a pull request. The Copilot CLI must be installed and authenticated, and the worktree must not contain credentials.
