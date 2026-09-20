@@ -1,7 +1,20 @@
-1. Generate one json as feedback:
+# The demo story
+
+1. Code Evolver can help you evolute your repo with your direction or data as input.
+2. Show Analyzer Agent Team and Code Evolver Agent Team 
+3. Then Start Demo Part:
+* Demo data analyzer agent team execution result
+* Demo code evolver agent team execution result
+
+
+# Upgrade the narration.json and demo-feedback.json 1st
+Generate one json as feedback:
 * UX color should use github like style. 
 * For human input, support select when possible.
-2. For agent team logs, support search and export to csv file for review.
-3. I cloned one other copy under /D/work/CodeEvolver for demo.  Pls use that copy for demo.
+* For agent team logs, support search and export to csv file for review.
 
-4. At last, povide link to let use to visit: https://github.com/caigen/CodeEvolver
+# Evolution Target
+ I cloned one other copy under /D/work/CodeEvolver for demo.  Pls use that copy for demo.
+
+# CodeEvolver Code Repo
+last, povide link to let use to visit: https://github.com/caigen/CodeEvolver
