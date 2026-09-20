@@ -1,0 +1,12 @@
+[
+  {
+    "category": "appearance",
+    "feedback": "Use a GitHub-like color style for the Code Evolver user interface.",
+    "requestedOutcome": "Use neutral surfaces, clear borders, accessible contrast, and restrained accent colors."
+  },
+  {
+    "category": "human-input",
+    "feedback": "For human input, support selection controls whenever possible.",
+    "requestedOutcome": "Offer known choices with select controls while retaining free-form input where needed."
+  }
+]

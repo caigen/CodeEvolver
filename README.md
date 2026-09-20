@@ -64,10 +64,15 @@ npm run demo:record --prefix .\src\code-evolver-web
 
 The script starts an isolated Vite server on an available local port, records
 Chromium, and closes both automatically. Before recording, it uses Windows
-PowerShell and System.Speech to synthesize six English narration clips locally.
-No speech API, credentials, or cloud upload is involved. It uploads sample checkout feedback,
-shows analysis, applies the recommendation, creates an evolution, and steps
-through simulated scan, plan, work, review, gate, and completion states.
+PowerShell and System.Speech to synthesize seven English narration clips locally.
+No speech API, credentials, or cloud upload is involved. Following
+`HumanDesign/DemoGuide.txt`, it uploads `scripts/demo-feedback.json` requesting
+GitHub-style colors and selection controls, applies the recommendation, and adds
+a human request for searchable agent logs with CSV export. The evolution target
+is the current repository root (resolved automatically), scoped to
+`src/code-evolver-web`. It steps through simulated scan, plan, work, review,
+gate, and completion states, then displays https://github.com/caigen/CodeEvolver.
+These are proposed work items; the recording does not implement these features.
 All API requests are intercepted; no files are changed by agents and no commits,
 pushes, or pull requests are created. External requests are blocked; Google Fonts
 uses the application's fallback fonts so recording does not require that service.
@@ -84,6 +89,8 @@ Each run creates a timestamped folder under `artifacts/demo/` (ignored by Git):
 - `narration/`: individual WAV clips and `narration.json` containing the voice,
   spoken text, and measured audio durations.
 - `chapters.srt` and `chapters.json`: captions and recording timeline.
+- `demo-feedback.json`: a copy of the uploaded feedback.
+- `visit-code-evolver.html`: the closing screen with a clickable project link.
 - Numbered PNG screenshots and `preview.png`: visual review evidence.
 
 FFmpeg removes startup footage, encodes the final video, and checks that it can
@@ -119,13 +126,58 @@ Remove-Item Env:DEMO_NARRATION
 
 Edit `src/code-evolver-web/scripts/record-demo.mjs` to change the sample data,
 chapter text, actions, or pauses. Chapter text is English to match the UI.
-Edit the six `text` entries in `src/code-evolver-web/scripts/narration.json`
+Edit the seven `text` entries in `src/code-evolver-web/scripts/narration.json`
 to change the spoken script. Keep its chapter titles in sync with the recorder;
 audio durations and chapter holds are recalculated automatically on each run.
 Dependencies include a local FFmpeg binary; optionally set `FFMPEG_PATH` to your
 own executable built with `libx264` and the `subtitles` filter. Initial npm and
 Chromium installation require internet access. If recording fails, fix the
 reported issue and rerun; existing outputs are retained in their own folders.
+
+## Record real agent execution
+
+Unlike `demo:record`, this command starts real Copilot agents and can consume
+credits and modify the current repository's web UI source:
+
+```powershell
+npm run demo:real --prefix .\src\code-evolver-web
+```
+
+Prerequisites: authenticated standalone `copilot.exe`, .NET 10 SDK, Node.js,
+installed Playwright Chromium, and a Windows English desktop speech voice.
+Set `DEMO_COPILOT_EXECUTABLE` to the full standalone executable path if needed.
+The VS Code `copilot` wrapper is not used because it may return plain text
+instead of the streamed JSON the API expects.
+
+The recorder builds and starts its own API on an available loopback port, with
+isolated state under `artifacts/demo/real-<timestamp>/api`. Publishing is disabled;
+agents are instructed not to stage, commit, push, create branches or pull
+requests, or modify existing unrelated changes. Each invocation is limited to
+30 AI credits and 15 minutes. These limits are per invocation, not the whole
+run. The target is the current checkout, not an isolated worktree; review your
+worktree before running and review all resulting changes afterward.
+
+The analyzer sees a bounded structural profile, not raw feedback row values.
+Its actual recommendation is recorded, then the DemoGuide requirements are
+explicitly entered as human direction. API responses and agent events are not
+mocked. Hot reload is disabled while agents edit; the page reloads at the end.
+
+Outputs include the original continuous silent recording in `raw/`, actual
+`analysis.json` and `evolution.json`, before/after patches, captured frames, and
+`code-evolver-real-demo.mp4` plus `code-evolver-real-demo-with-voice.webm`.
+Final videos are labeled edited highlights: waits between captured scenes are
+removed and scenes hold their last frame while local English narration plays.
+They are not continuous real-time recordings. A failed final evolution is shown
+as failed, exports its evidence when possible, and exits with a nonzero status.
+Setup or analysis failures may leave raw footage and `failure.json` only.
+All recorder-owned servers and browsers are stopped on exit.
+
+To check UI filtering/export and browser audio using a saved run (a post-run
+replay check, not additional live agent execution):
+
+```powershell
+node .\src\code-evolver-web\scripts\verify-real-demo.mjs .\artifacts\demo\real-<timestamp>
+```
 
 ## Self-host safely
 

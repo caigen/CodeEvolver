@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Activity, ArrowRight, Bot, Check, CircleStop, Clock3, FilePenLine, FileUp, FolderOpen, GitBranch, Play, Plus, RefreshCw, Save, Server, Sparkles, Timer, Trash2, X, XCircle } from 'lucide-react'
+import { Activity, ArrowRight, Bot, Check, CircleStop, Clock3, Download, FilePenLine, FileUp, FolderOpen, GitBranch, Play, Plus, RefreshCw, Save, Search, Server, Sparkles, Timer, Trash2, X, XCircle } from 'lucide-react'
 import './App.css'
 
 type EvolutionStatus = 'draft' | 'running' | 'stopRequested' | 'stopped' | 'completed' | 'failed'
@@ -29,6 +29,13 @@ type Evolution = {
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:5278/api'
 const repositoryStorageKey = 'code-evolver.repository-path'
 const emptyForm = { repositoryPath: '', direction: 'Improve e2e user experience & design and fix functionality issues.', scope: '.', targetBranch: 'main' }
+const directionOptions = [
+  'Improve e2e user experience & design and fix functionality issues.',
+  'Improve API reliability and test coverage',
+  'Refactor for maintainability without behavior changes',
+]
+const scopeOptions = ['.', 'src', 'src/code-evolver-web/src', 'tests']
+const branchOptions = ['main', 'develop', 'release']
 const agentMembers: AgentMember[] = [
   { name: 'Scan agent', startEvent: 'scan.started', completedEvent: 'scan.completed' },
   { name: 'Plan agent', startEvent: 'plan.started', completedEvent: 'plan.completed' },
@@ -77,6 +84,29 @@ const formatHeartbeat = (start?: string, now = Date.now()) => {
 
 const formatTimestamp = (value?: string) => value ? new Date(value).toLocaleString() : 'Not recorded'
 
+const filterEventsByLogs = (events: EvolutionEvent[], logSearch: string) => {
+  const query = logSearch.trim().toLocaleLowerCase()
+  if (!query) return events
+  return events
+    .map((event) => ({
+      ...event,
+      logs: event.logs.filter((log) => log.toLocaleLowerCase().includes(query)),
+    }))
+    .filter((event) => event.logs.length > 0)
+}
+
+const normalizeCsvCell = (value: string) => value.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+const protectCsvCell = (value: string) => /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value
+const escapeCsvCell = (value: string) => `"${protectCsvCell(normalizeCsvCell(value)).replaceAll('"', '""')}"`
+
+const buildEventLogsCsv = (events: EvolutionEvent[]) => {
+  const rows = [['eventId', 'type', 'status', 'createdAt', 'startedAt', 'completedAt', 'log']]
+  events.forEach((event) => {
+    event.logs.forEach((log) => rows.push([event.id, event.type, event.status, event.createdAt, event.startedAt ?? '', event.completedAt ?? '', log]))
+  })
+  return rows.map((row) => row.map(escapeCsvCell).join(',')).join('\r\n')
+}
+
 const AgentRoster = ({ members, events }: { members: AgentMember[]; events: EvolutionEvent[] }) => <div className="roster-grid">
   {members.map((member) => {
     const agent = getAgentState(events, member)
@@ -86,6 +116,7 @@ const AgentRoster = ({ members, events }: { members: AgentMember[]; events: Evol
 
 const EventTimeline = ({ events }: { events: EvolutionEvent[] }) => <div className="timeline">
   {[...events].reverse().map((item) => <div className={`event ${item.status}`} key={item.id}><span className="event-icon">{item.status === 'completed' ? <Check size={13} /> : item.status === 'failed' ? <XCircle size={13} /> : <Clock3 size={13} />}</span><details open><summary><strong>{item.type.replaceAll('.', ' ')}</strong><small>{item.status} · {formatTimestamp(item.startedAt ?? item.createdAt)}</small></summary><div className="event-detail"><dl><div><dt>Created</dt><dd>{formatTimestamp(item.createdAt)}</dd></div><div><dt>Started</dt><dd>{formatTimestamp(item.startedAt)}</dd></div><div><dt>Completed</dt><dd>{formatTimestamp(item.completedAt)}</dd></div></dl>{item.prompt && <><h4>GitHub Copilot prompt</h4><pre>{item.prompt}</pre></>}{item.logs.length > 0 && <><h4>Logs</h4><pre>{item.logs.join('\n\n')}</pre></>}{item.detail && <><h4>Result</h4><pre>{item.detail}</pre></>}</div></details></div>)}
+  {events.length === 0 && <p className="empty">No event logs match the current search.</p>}
 </div>
 
 function App() {
@@ -98,12 +129,14 @@ function App() {
   const [dataFile, setDataFile] = useState<File>()
   const [analyzingData, setAnalyzingData] = useState(false)
   const [dataAnalysis, setDataAnalysis] = useState<DataAnalysis>()
+  const [logSearch, setLogSearch] = useState('')
   const [error, setError] = useState('')
   const [now, setNow] = useState(0)
   const selected = evolutions.find((item) => item.id === selectedId) ?? evolutions[0]
   const isActive = selected?.status === 'running' || selected?.status === 'stopRequested'
   const activeEvent = selected?.events.find((item) => item.status === 'processing')
   const latestActivity = activeEvent?.logs.at(-1) ?? activeEvent?.prompt ?? 'Waiting for the next persisted event.'
+  const filteredSelectedEvents = useMemo(() => filterEventsByLogs(selected?.events ?? [], logSearch), [selected?.events, logSearch])
 
   const refresh = async () => {
     try {
@@ -267,6 +300,19 @@ function App() {
     } finally {
       setBusy(false)
     }
+
+  }
+
+  const exportFilteredLogs = () => {
+    if (!selected) return
+    const csv = buildEventLogsCsv(filteredSelectedEvents)
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `code-evolver-${selected.id}-logs.csv`
+    link.click()
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -315,9 +361,10 @@ function App() {
             <div className="area-heading"><span>Evolution</span><strong>Define and run the code change</strong></div>
             <div className="section-title">{editingId ? <FilePenLine size={17} /> : <Plus size={17} />}<h2>{editingId ? 'Edit evolution' : 'New evolution'}</h2></div>
             <label>Cloned repository path<div className="path-input"><input required value={form.repositoryPath} onChange={(e) => setRepositoryPath(e.target.value)} placeholder="C:\work\repository" /><button type="button" className="icon-button" title="Select repository folder" disabled={selectingRepository} onClick={() => void selectRepository()}><FolderOpen size={17} /></button></div></label>
+            <label>Direction preset<select value={directionOptions.includes(form.direction) ? form.direction : ''} onChange={(event) => { if (event.target.value) setForm({ ...form, direction: event.target.value }) }}><option value="">Custom direction</option>{directionOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
             <label>Evolution direction<textarea required rows={4} value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })} placeholder="Improve API reliability and test coverage" /></label>
-            <label>Scope<input required value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} placeholder="src/api" /></label>
-            <label>Target branch<div className="input-icon"><GitBranch size={16} /><input required value={form.targetBranch} onChange={(e) => setForm({ ...form, targetBranch: e.target.value })} /></div></label>
+            <label>Scope<select value={scopeOptions.includes(form.scope) ? form.scope : ''} onChange={(event) => { if (event.target.value) setForm({ ...form, scope: event.target.value }) }}><option value="">Custom scope</option>{scopeOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select><input required value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} placeholder="src/api" aria-label="Custom scope" /></label>
+            <label>Target branch<div className="selection-with-custom"><select value={branchOptions.includes(form.targetBranch) ? form.targetBranch : ''} onChange={(event) => { if (event.target.value) setForm({ ...form, targetBranch: event.target.value }) }} aria-label="Known target branch"><option value="">Custom branch</option>{branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select><div className="input-icon"><GitBranch size={16} /><input required value={form.targetBranch} onChange={(e) => setForm({ ...form, targetBranch: e.target.value })} aria-label="Custom target branch" /></div></div></label>
             <div className="form-actions">
               {editingId && <button type="button" className="secondary" disabled={busy} onClick={cancelEdit}><X size={17} />Cancel</button>}
               <button className="primary" disabled={busy}>{editingId ? <Save size={17} /> : <Plus size={17} />}{editingId ? 'Save changes' : 'Create evolution'}</button>
@@ -371,7 +418,12 @@ function App() {
               </section>
               <section className="panel timeline-panel">
                 <div className="section-title"><Clock3 size={17} /><h3>Event timeline</h3></div>
-                <EventTimeline events={selected.events} />
+                <div className="log-tools">
+                  <label><Search size={15} />Search event logs<input value={logSearch} onChange={(event) => setLogSearch(event.target.value)} placeholder="Filter by actual log text" /></label>
+                  <button type="button" className="secondary" disabled={filteredSelectedEvents.every((event) => event.logs.length === 0)} onClick={exportFilteredLogs}><Download size={16} />Export CSV</button>
+                  <small>{filteredSelectedEvents.length} of {selected.events.length} events</small>
+                </div>
+                <EventTimeline events={filteredSelectedEvents} />
               </section>
             </div>
           </>}

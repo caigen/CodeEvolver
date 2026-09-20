@@ -3,5 +3,6 @@
 * For human input, support select when possible.
 
 2. For agent team logs, support search and export to csv file for review.
+3. I cloned one other copy under /D/work/CodeEvolver for demo.  Pls use that copy for demo.
 
-3. Use /D/work/CodeEveolver for demo.
+4. At last, povide link to let use to visit: https://github.com/caigen/CodeEvolver
