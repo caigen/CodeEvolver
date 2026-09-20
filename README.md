@@ -114,6 +114,9 @@ Outputs include the original continuous silent recording in `raw/`, actual
 `code-evolver-real-demo.mp4` plus `code-evolver-real-demo-with-voice.webm`.
 Final videos are labeled edited highlights: waits between captured scenes are
 removed and scenes hold their last frame while local English narration plays.
+The spoken text appears as sentence-timed captions in a dedicated band below
+the interface. Caption timing comes from the generated sentence audio, and a
+matching `code-evolver-real-demo.srt` is saved beside both video exports.
 They are not continuous real-time recordings. A failed final evolution is shown
 as failed, exports its evidence when possible, and exits with a nonzero status.
 Setup or analysis failures may leave raw footage and `failure.json` only.

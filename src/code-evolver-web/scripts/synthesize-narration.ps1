@@ -28,11 +28,18 @@ try {
             $entry = $script[$index]
             if ([string]::IsNullOrWhiteSpace($entry.text)) { throw 'Narration text must not be empty.' }
             $file = 'voice-{0:D2}.wav' -f ($index + 1)
-            $synth.SetOutputToWaveFile((Join-Path $OutputDirectory $file))
-            $synth.Speak($entry.text)
-            $synth.SetOutputToNull()
-            if ((Get-Item -LiteralPath (Join-Path $OutputDirectory $file)).Length -le 44) { throw "Speech generation produced no audio for $file." }
-            [pscustomobject]@{ title = $entry.title; text = $entry.text; file = $file }
+            $sentences = [regex]::Split($entry.text.Trim(), '(?<=[.!?])\s+')
+            $captions = @(
+                for ($sentenceIndex = 0; $sentenceIndex -lt $sentences.Count; $sentenceIndex++) {
+                    $captionFile = 'voice-{0:D2}-caption-{1:D2}.wav' -f ($index + 1), ($sentenceIndex + 1)
+                    $synth.SetOutputToWaveFile((Join-Path $OutputDirectory $captionFile))
+                    $synth.Speak($sentences[$sentenceIndex])
+                    $synth.SetOutputToNull()
+                    if ((Get-Item -LiteralPath (Join-Path $OutputDirectory $captionFile)).Length -le 44) { throw "Speech generation produced no audio for $captionFile." }
+                    [pscustomobject]@{ text = $sentences[$sentenceIndex]; file = $captionFile }
+                }
+            )
+            [pscustomobject]@{ title = $entry.title; text = $entry.text; file = $file; captions = $captions }
         }
     )
     $metadata = [pscustomobject]@{ voice = $selected.VoiceInfo.Name; culture = $selected.VoiceInfo.Culture.Name; segments = $segments }

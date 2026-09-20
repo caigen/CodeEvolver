@@ -1,18 +1,18 @@
 [
   {
     "title": "Code Evolver | Less manual interaction, multiple tasks",
-    "text": "Code Evolver reduces the need for repeated human interaction by coordinating agents across multiple development tasks. You provide the goal; the teams handle the workflow."
+    "text": "Code Evolver helps teams improve repositories with less manual coordination. It organizes development tasks across specialized agents, turning a shared goal into a structured workflow."
   },
   {
     "title": "Analyzer Agent Team | From data to direction",
-    "text": "Start with data. The Analyzer Agent Team examines its profile, identifies insights, and recommends a direction for improving your repository."
+    "text": "That workflow can begin with data. The Analyzer Agent Team examines the data profile, identifies insights, and recommends a clear direction for improvement."
   },
   {
     "title": "Code Evolver Agent Team | From direction to changes",
-    "text": "Start with a direction. The Code Evolver Agent Team scans, plans, implements, reviews, and validates changes, turning your goal into repository improvements."
+    "text": "With a direction in place, the Code Evolver Agent Team takes the next step. It scans the repository, plans tasks, implements changes, and reviews and validates the results."
   },
   {
     "title": "Visit https://github.com/caigen/CodeEvolver",
-    "text": "Explore Code Evolver on GitHub. Visit github dot com, slash caigen, slash Code Evolver. Use your own direction or feedback data to guide your next repository improvement."
+    "text": "Explore Code Evolver on GitHub at github dot com, slash caigen, slash Code Evolver. Bring your data or your direction, and guide your next repository improvement."
   }
 ]

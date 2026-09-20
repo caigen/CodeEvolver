@@ -15,7 +15,7 @@ const narration = JSON.parse(await readFile(path.join(root, 'scripts/narration.j
 assert.equal(narration.length, 4, 'Provide four narration sections: purpose, analyzer, evolution, GitHub')
 const args = process.argv.slice(2)
 assert.ok(args.length === 0 || (args.length === 2 && args[0] === '--from'), 'Usage: demo:real [--from <saved-real-run>]')
-const source = args.length ? path.resolve(args[1]) : undefined
+const source = args.length ? path.resolve(process.env.INIT_CWD || process.cwd(), args[1]) : undefined
 const output = path.join(source || path.join(workspace, 'artifacts/demo'), `${source ? 'edit' : 'real'}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`)
 const projectUrl = 'https://github.com/caigen/CodeEvolver'
 const viewport = { width: 1920, height: 960 }
@@ -200,10 +200,23 @@ async function prepareNarration() {
   voiceSegments = []
   for (const segment of metadata.segments) {
     const audio = path.join(directory, segment.file)
-    const probe = await encode(['-nostats', '-i', audio, '-progress', 'pipe:2', '-f', 'null', '-'])
-    const duration = Math.ceil((Number([...probe.matchAll(/^out_time_us=(\d+)/gm)].at(-1)?.[1]) / 1000000 + 0.5) * 30) / 30
+    const captions = []
+    let speechDuration = 0
+    assert.equal(segment.captions.map(caption => caption.text).join(' '), segment.text)
+    for (const caption of segment.captions) {
+      const probe = await encode(['-nostats', '-i', path.join(directory, caption.file), '-progress', 'pipe:2', '-f', 'null', '-'])
+      const seconds = Number([...probe.matchAll(/^out_time_us=(\d+)/gm)].at(-1)?.[1]) / 1000000
+      assert.ok(Number.isFinite(seconds) && seconds > 0)
+      captions.push({ text: caption.text, start: speechDuration, end: speechDuration + seconds })
+      speechDuration += seconds
+    }
+    const playlist = path.join(directory, `${segment.file}.txt`)
+    await writeFile(playlist, segment.captions.map(caption => `file '${caption.file}'`).join('\n'))
+    await encode(['-y', '-f', 'concat', '-safe', '0', '-i', playlist, '-c:a', 'pcm_s16le', audio])
+    const duration = Math.ceil((speechDuration + 0.5) * 30) / 30
     assert.ok(Number.isFinite(duration) && duration > 1)
-    voiceSegments.push({ audio, duration })
+    captions.at(-1).end = duration
+    voiceSegments.push({ audio, duration, captions })
   }
   const seconds = voiceSegments.reduce((total, segment) => total + segment.duration, 0)
   assert.ok(seconds <= 59, `Narration needs ${seconds.toFixed(1)} seconds. Shorten scripts/narration.json to fit the 60-second video limit (59-second edit budget).`)
@@ -220,22 +233,41 @@ async function edit() {
   assert.ok(selected.every(Boolean), 'Missing required purpose, analyzer result, evolution outcome, or GitHub scene')
   const clips = []
   const chapters = []
+  const subtitles = []
+  const timestamp = (seconds, ass = false) => {
+    const ticks = Math.round(seconds * (ass ? 100 : 1000))
+    const scale = ass ? 100 : 1000
+    return `${String(Math.floor(ticks / scale / 3600)).padStart(ass ? 1 : 2, '0')}:${String(Math.floor(ticks / scale / 60) % 60).padStart(2, '0')}:${String(Math.floor(ticks / scale) % 60).padStart(2, '0')}${ass ? '.' : ','}${String(ticks % scale).padStart(ass ? 2 : 3, '0')}`
+  }
+  const escapeCaption = text => text.replaceAll('\\', '\\\\').replaceAll('{', '\\{').replaceAll('}', '\\}')
   let elapsed = 0
   for (const [index, scene] of selected.entries()) {
-    const { audio, duration } = voiceSegments[index]
+    const { audio, duration, captions } = voiceSegments[index]
     assert.ok(scene.end > scene.start && scene.start >= 0, 'Invalid source scene timing')
-    const heading = index === 2 ? `${narration[index].title} | ${outcome.status}` : narration[index].title
-    const title = `REAL EXECUTION - EDITED HIGHLIGHTS - PUBLISHING DISABLED\n${heading}`
-    const subtitle = `caption-${index}.srt`
-    await writeFile(path.join(output, subtitle), `1\n00:00:00,000 --> 00:10:00,000\n${title}\n`)
+    const subtitle = `caption-${index}.ass`
+    const label = `REAL EXECUTION | EDITED HIGHLIGHTS | PUBLISHING DISABLED${index === 2 ? ` | OUTCOME: ${outcome.status.toUpperCase()}` : ''}`
+    const dialogue = captions.map(caption => {
+      const words = caption.text.split(/\s+/)
+      const lines = ['']
+      for (const word of words) {
+        const last = lines.length - 1
+        if (lines[last].length + word.length + 1 > 100) lines.push(word)
+        else lines[last] += `${lines[last] ? ' ' : ''}${word}`
+      }
+      assert.ok(lines.length <= 2, 'Shorten narration sentences to fit two caption lines')
+      subtitles.push(`${subtitles.length + 1}\n${timestamp(elapsed + caption.start)} --> ${timestamp(elapsed + caption.end)}\n${lines.join('\n')}\n`)
+      return `Dialogue: 0,${timestamp(caption.start, true)},${timestamp(caption.end, true)},Spoken,,0,0,0,,${lines.map(escapeCaption).join('\\N')}`
+    })
+    await writeFile(path.join(output, subtitle), `[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 2\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Label,Segoe UI,18,&H00BBBBBB,&H00BBBBBB,&H001E1E1E,&H001E1E1E,0,0,0,0,100,100,0,0,1,0,0,8,60,60,968,1\nStyle: Spoken,Segoe UI,30,&H00FFFFFF,&H00FFFFFF,&H001E1E1E,&H001E1E1E,0,0,0,0,100,100,0,0,1,0,0,2,60,60,14,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,${timestamp(duration, true)},Label,,0,0,0,,${label}\n${dialogue.join('\n')}\n`)
     const filename = `clip-${index}.mp4`
-    const filter = `tpad=stop_mode=clone:stop_duration=${duration},pad=iw:ih+120:0:0:color=0x1e1e1e,subtitles=${subtitle}:force_style='FontName=Arial,FontSize=9,Outline=0,Shadow=0,MarginV=7'`
+    const filter = `tpad=stop_mode=clone:stop_duration=${duration},pad=iw:ih+120:0:0:color=0x1e1e1e,ass=${subtitle}`
     await encode(['-y', '-ss', String(scene.start), '-t', String(scene.end - scene.start), '-i', rawVideo, '-i', audio, '-map', '0:v:0', '-map', '1:a:0', '-vf', filter, '-af', 'apad', '-t', String(duration), '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', '30', '-c:a', 'aac', '-ar', '48000', '-ac', '1', filename])
     await encode(['-y', '-ss', '1', '-i', filename, '-frames:v', '1', `preview-${index + 1}.png`])
     clips.push(`file '${filename}'`)
-    chapters.push({ ...narration[index], start: elapsed, duration, sourceScene: scene.title })
+    chapters.push({ ...narration[index], start: elapsed, duration, sourceScene: scene.title, captions })
     elapsed += duration
   }
+  await writeFile(path.join(output, 'code-evolver-real-demo.srt'), subtitles.join('\n'))
   await writeFile(path.join(output, 'clips.txt'), clips.join('\n'))
   await encode(['-y', '-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', '-movflags', '+faststart', 'code-evolver-real-demo.mp4'])
   await encode(['-y', '-i', 'code-evolver-real-demo.mp4', '-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', '30', '-deadline', 'realtime', '-cpu-used', '6', '-row-mt', '1', '-c:a', 'libopus', '-b:a', '128k', 'code-evolver-real-demo-with-voice.webm'])
@@ -271,17 +303,17 @@ try {
     }
     console.log(`Reusing saved real execution: ${source}; no agents will run`)
   } else {
-  assert.notEqual(repository.toLowerCase(), workspace.toLowerCase(), 'Demo changes must target the separate clone')
-  assert.equal((await run('git', ['rev-parse', '--show-toplevel'], { cwd: repository })).trim().replaceAll('\\', '/').toLowerCase(), repository.replaceAll('\\', '/').toLowerCase())
-  console.log(`Demo target: ${repository}; artifacts: ${output}`)
-  console.log((await run(process.env.DEMO_COPILOT_EXECUTABLE || 'copilot.exe', ['--version'])).trim())
-  console.log('Building the API before launching real agents')
-  await run('dotnet', ['build', path.join(workspace, 'src/CodeEvolver.Api/CodeEvolver.Api.csproj'), '--no-restore'])
-  await writeFile(path.join(output, 'before-status.txt'), await run('git', ['status', '--short'], { cwd: repository }))
-  await writeFile(path.join(output, 'before.patch'), await run('git', ['diff', '--binary'], { cwd: repository }))
-  await record()
-  await writeFile(path.join(output, 'after.patch'), await run('git', ['diff', '--binary'], { cwd: repository }))
-  await writeFile(path.join(output, 'after-status.txt'), await run('git', ['status', '--short'], { cwd: repository }))
+    assert.notEqual(repository.toLowerCase(), workspace.toLowerCase(), 'Demo changes must target the separate clone')
+    assert.equal((await run('git', ['rev-parse', '--show-toplevel'], { cwd: repository })).trim().replaceAll('\\', '/').toLowerCase(), repository.replaceAll('\\', '/').toLowerCase())
+    console.log(`Demo target: ${repository}; artifacts: ${output}`)
+    console.log((await run(process.env.DEMO_COPILOT_EXECUTABLE || 'copilot.exe', ['--version'])).trim())
+    console.log('Building the API before launching real agents')
+    await run('dotnet', ['build', path.join(workspace, 'src/CodeEvolver.Api/CodeEvolver.Api.csproj'), '--no-restore'])
+    await writeFile(path.join(output, 'before-status.txt'), await run('git', ['status', '--short'], { cwd: repository }))
+    await writeFile(path.join(output, 'before.patch'), await run('git', ['diff', '--binary'], { cwd: repository }))
+    await record()
+    await writeFile(path.join(output, 'after.patch'), await run('git', ['diff', '--binary'], { cwd: repository }))
+    await writeFile(path.join(output, 'after-status.txt'), await run('git', ['status', '--short'], { cwd: repository }))
   }
   await edit()
   assert.equal(outcome.status, 'completed', outcome.error || 'Real execution was not completed; see recorded evidence')
