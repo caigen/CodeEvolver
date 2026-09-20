@@ -387,7 +387,7 @@ function App() {
         <section className="detail">
           {!selected ? <div className="blank-state"><Activity size={30} /><h2>Create an evolution to begin</h2></div> : <>
             <div className="detail-head">
-              <div><span className={`status-label ${selected.status}`}>{selected.status}</span><h2>{selected.direction}</h2><p>{selected.repositoryPath} <span>/</span> {selected.scope}</p></div>
+              <div><span className={`status-label ${selected.status}`}>{selected.status}</span><h2 tabIndex={0}>{selected.direction}</h2><p>{selected.repositoryPath} <span>/</span> {selected.scope}</p></div>
               <div className="actions">
                 <button className="icon-button" title="Refresh" onClick={() => void refresh()}><RefreshCw size={17} /></button>
                 <button className="icon-button" title="Edit evolution" disabled={busy || isActive} onClick={beginEdit}><FilePenLine size={17} /></button>
