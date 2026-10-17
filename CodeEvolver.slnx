@@ -1,6 +1,8 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/CodeEvolver.Core/CodeEvolver.Core.csproj" />
     <Project Path="src/CodeEvolver.Api/CodeEvolver.Api.csproj" />
+    <Project Path="src/CodeEvolver.Worker/CodeEvolver.Worker.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CodeEvolver.Api.Tests/CodeEvolver.Api.Tests.csproj" />

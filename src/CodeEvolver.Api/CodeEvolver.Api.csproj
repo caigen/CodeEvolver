@@ -7,9 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CassandraCSharpDriver" Version="3.22.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <ProjectReference Include="../CodeEvolver.Core/CodeEvolver.Core.csproj" />
+    <Compile Remove="*.cs;Properties/AssemblyInfo.cs" />
+    <Compile Include="Program.cs" />
   </ItemGroup>
 
 </Project>
