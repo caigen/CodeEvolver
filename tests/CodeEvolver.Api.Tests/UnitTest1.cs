@@ -329,15 +329,18 @@ public sealed class EvolutionLifecycleTests
         await coordinator.StartAsync(evolution.Id, CancellationToken.None);
         var claimed = await store.ClaimNextEventAsync(CancellationToken.None);
         Assert.NotNull(claimed);
-        var monitor = new EventMonitor(store, new LocalAgentRunner(), NullLogger<EventMonitor>.Instance);
-
-        await monitor.RecoverInterruptedEventsAsync(CancellationToken.None);
+        await store.MutateAsync(evolution.Id, e => e.Events.Single(x => x.Id == claimed.Value.Event.Id).LeaseUntil = DateTimeOffset.UtcNow.AddSeconds(-1), CancellationToken.None);
+        Assert.Null(await store.ClaimNextEventAsync(CancellationToken.None));
+        await store.MutateAsync(evolution.Id, e => e.Events.Single(x => x.Id == claimed.Value.Event.Id).NotBefore = DateTimeOffset.UtcNow.AddSeconds(-1), CancellationToken.None);
+        var reclaimed = await store.ClaimNextEventAsync(CancellationToken.None);
 
         var recovered = await store.GetAsync(evolution.Id, CancellationToken.None);
         Assert.NotNull(recovered);
-        Assert.Equal(EvolutionStatus.Failed, recovered.Status);
-        Assert.Contains("interrupted", recovered.Error);
-        Assert.Equal(EvolutionEventStatus.Failed, recovered.Events.Single(item => item.Id == claimed.Value.Event.Id).Status);
+        Assert.Equal(EvolutionStatus.Running, recovered.Status);
+        Assert.NotNull(reclaimed);
+        Assert.Equal(claimed.Value.Event.Id, reclaimed.Value.Event.Id);
+        Assert.Equal(2, reclaimed.Value.Event.Attempts);
+        Assert.NotEqual(claimed.Value.Event.LeaseOwner, reclaimed.Value.Event.LeaseOwner);
     }
 
     [Fact]
@@ -357,8 +360,8 @@ public sealed class EvolutionLifecycleTests
 
         var failed = await store.GetAsync(evolution.Id, CancellationToken.None);
         Assert.NotNull(failed);
-        Assert.Equal(EvolutionStatus.Failed, failed.Status);
-        Assert.Equal(EvolutionEventStatus.Failed, failed.Events.Single(item => item.Id == claimed.Value.Event.Id).Status);
+        Assert.Equal(EvolutionStatus.Running, failed.Status);
+        Assert.Equal(EvolutionEventStatus.Pending, failed.Events.Single(item => item.Id == claimed.Value.Event.Id).Status);
     }
 
     [Fact]
@@ -392,7 +395,7 @@ public sealed class EvolutionLifecycleTests
     }
 
     [Fact]
-    public async Task Start_RestartsStoppedEvolutionFromCleanState()
+    public async Task Start_DoesNotEraseStoppedEvolutionHistory()
     {
         var store = new MemoryEvolutionStore();
         var coordinator = new EvolutionCoordinator(store);
@@ -407,15 +410,11 @@ public sealed class EvolutionLifecycleTests
         evolution.Events.Add(new EvolutionEvent { Type = EvolutionEventTypes.ScanCompleted, Status = EvolutionEventStatus.Completed });
         await store.SaveAsync(evolution, CancellationToken.None);
 
-        var restarted = await coordinator.StartAsync(evolution.Id, CancellationToken.None);
-
-        Assert.NotNull(restarted);
-        Assert.Equal(EvolutionStatus.Running, restarted.Status);
-        Assert.Empty(restarted.WorkItems);
-        Assert.Null(restarted.Summary);
-        Assert.Null(restarted.Error);
-        Assert.DoesNotContain(restarted.Events, entry => entry.Type == EvolutionEventTypes.ScanCompleted);
-        Assert.Contains(restarted.Events, entry => entry.Type == EvolutionEventTypes.ScanStarted);
+        await Assert.ThrowsAsync<StoreConflictException>(() => coordinator.StartAsync(evolution.Id, CancellationToken.None));
+        var saved = await store.GetAsync(evolution.Id, CancellationToken.None);
+        Assert.Equal(EvolutionStatus.Stopped, saved!.Status);
+        Assert.Single(saved.WorkItems);
+        Assert.Contains(saved.Events, entry => entry.Type == EvolutionEventTypes.ScanCompleted);
     }
 
     [Fact]
@@ -465,33 +464,22 @@ public sealed class EvolutionLifecycleTests
         Assert.Null(await store.GetAsync(evolution.Id, CancellationToken.None));
     }
 
-    private sealed class MemoryEvolutionStore : IEvolutionStore
+    private sealed class MemoryEvolutionStore(bool honorCancellation = false) : TransactionalEvolutionStore
     {
-        private readonly bool honorCancellation;
-        private readonly List<Evolution> evolutions = [];
-
-        public MemoryEvolutionStore(bool honorCancellation = false)
+        private string json = "{}";
+        private readonly SemaphoreSlim gate = new(1, 1);
+        protected override async Task<T> TransactionAsync<T>(Func<StoreState, T> action, bool write, CancellationToken token)
         {
-            this.honorCancellation = honorCancellation;
-        }
-
-        public Task<IReadOnlyList<Evolution>> ListAsync(CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<Evolution>>(evolutions);
-        public Task<Evolution?> GetAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(evolutions.SingleOrDefault(item => item.Id == id));
-        public Task<Evolution> SaveAsync(Evolution evolution, CancellationToken cancellationToken)
-        {
-            if (honorCancellation) cancellationToken.ThrowIfCancellationRequested();
-            if (!evolutions.Contains(evolution)) evolutions.Add(evolution);
-            return Task.FromResult(evolution);
-        }
-        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(evolutions.RemoveAll(item => item.Id == id) > 0);
-        public Task<(Evolution Evolution, EvolutionEvent Event)?> ClaimNextEventAsync(CancellationToken cancellationToken)
-        {
-            var evolution = evolutions.FirstOrDefault(item => item.Status == EvolutionStatus.Running);
-            var evolutionEvent = evolution?.Events.FirstOrDefault(entry => entry.Status == EvolutionEventStatus.Pending);
-            if (evolution is null || evolutionEvent is null) return Task.FromResult<(Evolution, EvolutionEvent)?>(null);
-            evolutionEvent.Status = EvolutionEventStatus.Processing;
-            evolutionEvent.StartedAt = DateTimeOffset.UtcNow;
-            return Task.FromResult<(Evolution, EvolutionEvent)?>((evolution, evolutionEvent));
+            if (honorCancellation) token.ThrowIfCancellationRequested();
+            await gate.WaitAsync(token);
+            try
+            {
+                var state = System.Text.Json.JsonSerializer.Deserialize<StoreState>(json, JsonOptions)!;
+                var result = action(state);
+                if (write) json = System.Text.Json.JsonSerializer.Serialize(state, JsonOptions);
+                return result;
+            }
+            finally { gate.Release(); }
         }
     }
 
@@ -512,7 +500,7 @@ public sealed class EvolutionLifecycleTests
             IReadOnlyList<WorkItem> workItems = eventType == EvolutionEventTypes.PlanStarted
                 ? [new WorkItem { Title = "First item", Description = "First" }, new WorkItem { Title = "Second item", Description = "Second" }]
                 : [];
-            return Task.FromResult(new AgentResult(eventType, workItems, []));
+            return Task.FromResult(new AgentResult(eventType, workItems, [], GatePassed: true));
         }
     }
 
