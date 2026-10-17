@@ -54,6 +54,24 @@ are separately configurable (1–50). Verification results are recorded at the e
 - Publishing is opt-in and requires a fresh approval for every cycle.
 - Tests run in an isolated local database, never an existing application database.
 
-## Verification
+## Verification — completed
 
-Pending implementation and execution; no checks are claimed yet.
+Rounds 01–30 are delivered as the 30 bounded design/implementation/review items
+above, grouped into 21 local Git commits (not 30 independent live Copilot runs).
+Final acceptance details are in [Validation.md](Validation.md).
+
+- .NET 10 solution/Worker compilation succeeded; final test build had no compiler warnings.
+- 51 backend tests passed, 0 failed, 0 skipped, including real MySQL integration.
+- 30-cycle and 50-cycle simulation tests retained all work history and respected budgets.
+- Frontend TypeScript/Vite production build and Oxlint passed; npm audit reported 0 vulnerabilities.
+- Browser E2E passed in Edge, including 390px mobile and 1440px desktop layouts.
+- With the UI closed and API stopped, persisted event count advanced from 10 to 28.
+- Worker restart preserved dispatch pause and checkpoints; the 10-cycle run completed.
+- Uploaded Analyzer data completed four persisted roles and survived page reload.
+- PowerShell launcher/installer and JavaScript recorder syntax checks passed.
+- HumanDesign unchanged; local mysql.txt ignored and not read/committed; no remote push.
+
+Not performed: actual Copilot-authenticated coding/publishing, Windows Service
+installation under a dedicated account, or a full narrated real-demo recording.
+These require the target account's credentials and are not implied by simulated tests.
+Temporary API/Worker/browser/database test processes were stopped after verification.
