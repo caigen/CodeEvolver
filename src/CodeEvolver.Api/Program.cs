@@ -2,26 +2,19 @@ using CodeEvolver.Api;
 using Microsoft.VisualBasic.FileIO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Net;
+using MySqlConnector;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
+var allowedOrigins = new[] { "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5278", "http://127.0.0.1:5278" };
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
-    policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin()));
-builder.Services.AddSingleton<IEvolutionStore>(services =>
-    builder.Configuration["Storage:Provider"]?.Equals("cassandra", StringComparison.OrdinalIgnoreCase) == true
-        ? ActivatorUtilities.CreateInstance<CassandraEvolutionStore>(services)
-        : ActivatorUtilities.CreateInstance<JsonEvolutionStore>(services));
-builder.Services.AddSingleton<EvolutionCoordinator>();
-builder.Services.AddSingleton<CopilotAgentRunner>();
-builder.Services.AddSingleton<DataAnalyzer>();
-builder.Services.AddSingleton<IAgentRunner>(services =>
-    builder.Configuration["Agent:Provider"]?.Equals("local", StringComparison.OrdinalIgnoreCase) == true
-        ? new LocalAgentRunner()
-        : services.GetRequiredService<CopilotAgentRunner>());
-builder.Services.AddHostedService<EventMonitor>();
+    policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod()));
+builder.Services.AddProblemDetails();
+builder.Services.AddEvolutionCore(builder.Configuration);
 
 var app = builder.Build();
 
@@ -30,14 +23,45 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseCors();
-
-app.MapGet("/api/health", (IConfiguration configuration) => Results.Ok(new
+app.Use(async (context, next) =>
 {
-    status = "healthy",
-    storage = configuration["Storage:Provider"] ?? "json",
-    agent = configuration["Agent:Provider"] ?? "copilot"
-}));
+    // CORS alone does not prevent cross-origin form POSTs from launching coding jobs.
+    var origin = context.Request.Headers.Origin.ToString();
+    if ((context.Connection.RemoteIpAddress is { } address && !IPAddress.IsLoopback(address)) ||
+        (origin.Length > 0 && !allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase)))
+    {
+        await Results.Problem("This control plane only accepts trusted loopback clients.", statusCode: 403).ExecuteAsync(context);
+        return;
+    }
+    try { await next(context); }
+    catch (StoreConflictException exception) { await Results.Problem(exception.Message, statusCode: 409).ExecuteAsync(context); }
+    catch (MySqlException) { await Results.Problem("MySQL is unavailable; the command was not acknowledged. Refresh before retrying.", statusCode: 503).ExecuteAsync(context); }
+});
+app.UseCors();
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+app.MapGet("/api/health", async (IEvolutionStore store, IConfiguration configuration, CancellationToken token) =>
+{
+    await store.ServiceAsync(null, token);
+    return Results.Ok(new { status = "healthy", storage = "mysql", role = "control-plane", agent = configuration["Agent:Provider"] ?? "copilot" });
+});
+app.MapGet("/api/service", async (IEvolutionStore store, IConfiguration configuration, CancellationToken token) =>
+{
+    var state = await store.ServiceAsync(null, token);
+    return Results.Ok(new ServiceResponse(state.DispatchPaused, state.Workers.Any(w => w.LastSeenAt > DateTimeOffset.UtcNow.AddSeconds(-30)),
+        state.Workers, configuration.GetValue("Agent:Copilot:PublishChanges", false), state.UpdatedAt));
+});
+app.MapPost("/api/service/control", async (ServiceControlRequest request, IEvolutionStore store, CancellationToken token) =>
+{
+    var state = await store.ServiceAsync(state =>
+    {
+        state.DispatchPaused = request.Paused;
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        state.Commands.Add(new ServiceCommand(request.Paused ? "pause-dispatch" : "resume-dispatch", state.UpdatedAt));
+    }, token);
+    return Results.Ok(new { state.DispatchPaused, state.UpdatedAt });
+});
 app.MapGet("/api/repository", (IWebHostEnvironment environment) =>
 {
     var repositoryPath = RepositoryDiscovery.FindRoot(environment.ContentRootPath);
@@ -74,13 +98,27 @@ app.MapPost("/api/data-analysis", async (HttpRequest request, DataAnalyzer analy
         return Results.BadRequest(new { error = exception.Message });
     }
 }).DisableAntiforgery();
-app.MapGet("/api/data-analysis/{id:guid}", (Guid id, DataAnalyzer analyzer) =>
+app.MapGet("/api/data-analysis/{id:guid}", async (Guid id, DataAnalyzer analyzer, CancellationToken token) =>
 {
-    var run = analyzer.Get(id);
+    var run = await analyzer.GetAsync(id, token);
     return run is null ? Results.NotFound() : Results.Ok(run);
 });
-app.MapGet("/api/evolutions", async (IEvolutionStore store, CancellationToken cancellationToken) =>
-    Results.Ok(await store.ListAsync(cancellationToken)));
+app.MapGet("/api/data-analysis", async (IEvolutionStore store, CancellationToken token) =>
+    Results.Ok((await store.ListAsync(token)).Where(e => e.Kind == "analysis").Take(50).Select(DataAnalyzer.ToResponse)));
+app.MapGet("/api/evolutions", async (bool? summaries, int? offset, IEvolutionStore store, CancellationToken cancellationToken) =>
+{
+    var items = (await store.ListAsync(cancellationToken)).Where(e => e.Kind == "evolution").Skip(Math.Max(0, offset ?? 0)).Take(50).ToArray();
+    if (summaries == true)
+        return Results.Ok(items.Select(e => new { e.Id, e.RepositoryPath, e.Direction, e.Scope, e.TargetBranch, e.Status, e.Cycle, e.MaxCycles,
+            e.CycleDelaySeconds, e.PublishChanges, e.UpdatedAt, e.StartedAt, e.CompletedAt, events = Array.Empty<EvolutionEvent>(), workItems = Array.Empty<WorkItem>() }));
+    return Results.Ok((object)items);
+});
+app.MapGet("/api/evolutions/{id:guid}/events", async (Guid id, int? offset, int? limit, IEvolutionStore store, CancellationToken token) =>
+{
+    var evolution = await store.GetAsync(id, token);
+    return evolution is null ? Results.NotFound() : Results.Ok(new { total = evolution.Events.Count,
+        items = evolution.Events.Skip(Math.Max(0, offset ?? 0)).Take(Math.Clamp(limit ?? 100, 1, 500)) });
+});
 app.MapGet("/api/evolutions/{id:guid}", async (Guid id, IEvolutionStore store, CancellationToken cancellationToken) =>
 {
     var evolution = await store.GetAsync(id, cancellationToken);
@@ -103,14 +141,12 @@ app.MapPut("/api/evolutions/{id:guid}", async (Guid id, CreateEvolutionRequest r
     if (errors.Count > 0) return Results.ValidationProblem(errors);
     var existing = await store.GetAsync(id, cancellationToken);
     if (existing is null) return Results.NotFound();
-    if (existing.Status is EvolutionStatus.Running or EvolutionStatus.StopRequested) return Results.Conflict(new { error = "Wait for the evolution to stop before editing it." });
     return Results.Ok(await coordinator.UpdateAsync(id, request, cancellationToken));
 });
 app.MapDelete("/api/evolutions/{id:guid}", async (Guid id, IEvolutionStore store, EvolutionCoordinator coordinator, CancellationToken cancellationToken) =>
 {
     var existing = await store.GetAsync(id, cancellationToken);
     if (existing is null) return Results.NotFound();
-    if (existing.Status is EvolutionStatus.Running or EvolutionStatus.StopRequested) return Results.Conflict(new { error = "Wait for the evolution to stop before deleting it." });
     await coordinator.DeleteAsync(id, cancellationToken);
     return Results.NoContent();
 });
@@ -124,6 +160,21 @@ app.MapPost("/api/evolutions/{id:guid}/stop", async (Guid id, EvolutionCoordinat
     var evolution = await coordinator.StopAsync(id, cancellationToken);
     return evolution is null ? Results.NotFound() : Results.Ok(evolution);
 });
+
+foreach (var command in new[] { "pause", "resume", "approve", "retry" })
+{
+    app.MapPost($"/api/evolutions/{{id:guid}}/{command}", async (Guid id, EvolutionCoordinator coordinator, CancellationToken token) =>
+    {
+        var evolution = await (command switch
+        {
+            "pause" => coordinator.PauseAsync(id, token),
+            "resume" => coordinator.ResumeAsync(id, token),
+            "approve" => coordinator.ApproveAsync(id, token),
+            _ => coordinator.RetryAsync(id, token)
+        });
+        return evolution is null ? Results.NotFound() : Results.Accepted($"/api/evolutions/{id}", evolution);
+    });
+}
 
 app.Run();
 
