@@ -1,154 +1,201 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace CodeEvolver.Api;
 
 public sealed class EventMonitor(IEvolutionStore store, IAgentRunner agentRunner, ILogger<EventMonitor> logger) : BackgroundService
 {
+    private readonly string workerId = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await RecoverInterruptedEventsAsync(stoppingToken);
         while (!stoppingToken.IsCancellationRequested)
         {
-            var claimed = await store.ClaimNextEventAsync(stoppingToken);
-            if (claimed is null) { await Task.Delay(500, stoppingToken); continue; }
-            await ProcessAsync(claimed.Value.Evolution, claimed.Value.Event, stoppingToken);
+            try
+            {
+                await HeartbeatAsync(null, stoppingToken);
+                var claimed = await store.ClaimNextEventAsync(stoppingToken);
+                if (claimed is null) await Task.Delay(1000, stoppingToken);
+                else await ProcessAsync(claimed.Value.Evolution, claimed.Value.Event, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Worker loop failed; retrying without losing persisted work.");
+                await Task.Delay(3000, stoppingToken);
+            }
         }
     }
 
-    public async Task RecoverInterruptedEventsAsync(CancellationToken cancellationToken)
+    private Task<ServiceState> HeartbeatAsync(Guid? evolutionId, CancellationToken token) => store.ServiceAsync(state =>
     {
-        var evolutions = await store.ListAsync(cancellationToken);
-        foreach (var evolution in evolutions.Where(item => item.Status is EvolutionStatus.Running or EvolutionStatus.StopRequested))
-        {
-            var interruptedEvents = evolution.Events.Where(entry => entry.Status == EvolutionEventStatus.Processing).ToArray();
-            if (interruptedEvents.Length == 0) continue;
-            const string message = "The agent phase was interrupted when the Code Evolver service stopped. Start the evolution again to retry from a clean state.";
-            foreach (var interruptedEvent in interruptedEvents)
-            {
-                interruptedEvent.Status = EvolutionEventStatus.Failed;
-                interruptedEvent.Detail = message;
-                interruptedEvent.Logs.Add($"{DateTimeOffset.UtcNow:O} {message}");
-                interruptedEvent.CompletedAt = DateTimeOffset.UtcNow;
-            }
-            evolution.Status = EvolutionStatus.Failed;
-            evolution.Error = message;
-            evolution.CompletedAt = DateTimeOffset.UtcNow;
-            await store.SaveAsync(evolution, cancellationToken);
-        }
-    }
+        state.Workers.RemoveAll(w => w.Id == workerId || w.LastSeenAt < DateTimeOffset.UtcNow.AddDays(-1));
+        state.Workers.Add(new WorkerHeartbeat(workerId, DateTimeOffset.UtcNow, evolutionId));
+    }, token);
 
     public async Task ProcessAsync(Evolution evolution, EvolutionEvent currentEvent, CancellationToken cancellationToken)
     {
+        var owner = currentEvent.LeaseOwner ?? throw new LeaseLostException();
+        using var execution = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var heartbeatStop = new CancellationTokenSource();
+        var heartbeat = MaintainLeaseAsync();
         try
         {
-            if (currentEvent.Type == EvolutionEventTypes.WorkItemStarted)
+            // Local lock also prevents overlapping CLI writers if a lease expires during a DB outage.
+            var lockDirectory = Path.Combine(Path.GetTempPath(), "code-evolver-repository-locks");
+            Directory.CreateDirectory(lockDirectory);
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(TransactionalEvolutionStore.RepositoryKey(evolution.RepositoryPath))));
+            await using var repositoryLock = new FileStream(Path.Combine(lockDirectory, hash + ".lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            evolution = await store.UpdateClaimAsync(evolution.Id, currentEvent.Id, owner, (saved, entry) =>
             {
-                var nextWorkItem = evolution.WorkItems.FirstOrDefault(item => item.Status == "planned");
-                if (nextWorkItem is not null) nextWorkItem.Status = "working";
-            }
-            currentEvent.Prompt = agentRunner.GetPrompt(evolution, currentEvent.Type);
-            currentEvent.Logs.Add($"{DateTimeOffset.UtcNow:O} Dispatching {currentEvent.Type}.");
-            await store.SaveAsync(evolution, cancellationToken);
-            var progressGate = new SemaphoreSlim(1, 1);
-            var result = await agentRunner.RunAsync(evolution, currentEvent.Type, async (message, progressToken) =>
-            {
-                await progressGate.WaitAsync(progressToken);
-                try
+                if (entry.Type == EvolutionEventTypes.WorkItemStarted)
                 {
-                    var latestEvolution = await store.GetAsync(evolution.Id, progressToken);
-                    var latestEvent = latestEvolution?.Events.SingleOrDefault(entry => entry.Id == currentEvent.Id);
-                    if (latestEvolution is null || latestEvent is null) return;
-                    latestEvent.Logs.Add($"{DateTimeOffset.UtcNow:O} {message}");
-                    await store.SaveAsync(latestEvolution, progressToken);
+                    var item = saved.WorkItems.FirstOrDefault(w => w.Cycle == saved.Cycle && w.Status == "planned");
+                    if (item is not null) item.Status = "working";
                 }
-                finally
-                {
-                    progressGate.Release();
-                }
-            }, cancellationToken);
-            var latest = await store.GetAsync(evolution.Id, cancellationToken);
-            if (latest is null) throw new InvalidOperationException($"Evolution {evolution.Id} disappeared while its agent was running.");
-            evolution = latest;
-            currentEvent = evolution.Events.Single(entry => entry.Id == currentEvent.Id);
-            currentEvent.Status = EvolutionEventStatus.Completed;
-            currentEvent.Detail = result.Detail;
-            currentEvent.Logs.AddRange(result.Logs);
-            currentEvent.Logs.Add($"{DateTimeOffset.UtcNow:O} Completed {currentEvent.Type}.");
-            currentEvent.CompletedAt = DateTimeOffset.UtcNow;
-            if (latest?.Status == EvolutionStatus.StopRequested)
+                entry.Prompt = agentRunner.GetPrompt(saved, entry.Type);
+                entry.Logs.Add($"{DateTimeOffset.UtcNow:O} Dispatching {entry.Type}, attempt {entry.Attempts}, worker {workerId}.");
+            }, execution.Token);
+            var result = await agentRunner.RunAsync(evolution, currentEvent.Type, async (message, token) =>
             {
-                latest.Status = EvolutionStatus.Stopped;
-                latest.CompletedAt = DateTimeOffset.UtcNow;
-                latest.Events.Add(EvolutionCoordinator.CompletedEvent(EvolutionEventTypes.EvolutionStopped));
-                await store.SaveAsync(latest, cancellationToken);
-                return;
-            }
-            if (currentEvent.Type == EvolutionEventTypes.PlanStarted && result.WorkItems.Count == 0)
-                throw new InvalidOperationException("The planning agent did not return any valid work items.");
-            foreach (var workItem in result.WorkItems.Take(5)) evolution.WorkItems.Add(workItem);
-            if (currentEvent.Type == EvolutionEventTypes.WorkItemStarted)
-            {
-                var workItem = evolution.WorkItems.FirstOrDefault(item => item.Status == "working");
-                if (workItem is not null)
-                {
-                    workItem.Status = "completed";
-                    workItem.Result = result.Detail;
-                }
-            }
-            foreach (var eventType in NextEvents(currentEvent.Type))
-                evolution.Events.Add(eventType.EndsWith(".completed", StringComparison.Ordinal)
-                    ? EvolutionCoordinator.CompletedEvent(eventType, result.Detail)
-                    : new EvolutionEvent { Type = eventType });
-            if (currentEvent.Type == EvolutionEventTypes.PlanStarted)
-                evolution.Events.Add(new EvolutionEvent { Type = EvolutionEventTypes.WorkItemStarted });
-            if (currentEvent.Type == EvolutionEventTypes.WorkItemStarted)
-                evolution.Events.Add(new EvolutionEvent
-                {
-                    Type = evolution.WorkItems.Any(item => item.Status == "planned")
-                        ? EvolutionEventTypes.WorkItemStarted
-                        : EvolutionEventTypes.ReviewStarted
-                });
-            if (currentEvent.Type == EvolutionEventTypes.ChangeMerged)
-            {
-                evolution.Status = EvolutionStatus.Completed;
-                evolution.Summary = result.Detail;
-                evolution.CompletedAt = DateTimeOffset.UtcNow;
-            }
-            await store.SaveAsync(evolution, cancellationToken);
+                await store.UpdateClaimAsync(evolution.Id, currentEvent.Id, owner,
+                    (_, entry) => entry.Logs.Add($"{DateTimeOffset.UtcNow:O} {message}"), token);
+            }, execution.Token);
+            await store.UpdateClaimAsync(evolution.Id, currentEvent.Id, owner, (saved, entry) => Complete(saved, entry, result), execution.Token);
         }
+        catch (LeaseLostException) { logger.LogWarning("Lease lost for {EvolutionId}; stale output discarded.", evolution.Id); }
         catch (Exception exception)
         {
-            logger.LogError(exception, "Event {EventType} failed for evolution {EvolutionId}", currentEvent.Type, evolution.Id);
-            currentEvent.Status = EvolutionEventStatus.Failed;
-            currentEvent.Detail = exception.Message;
-            currentEvent.Logs.Add($"{DateTimeOffset.UtcNow:O} Failed: {exception.Message}");
-            currentEvent.CompletedAt = DateTimeOffset.UtcNow;
-            var activeWorkItem = evolution.WorkItems.FirstOrDefault(item => item.Status == "working");
-            if (activeWorkItem is not null)
+            logger.LogWarning(exception, "Phase failed for {EvolutionId}", evolution.Id);
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
             {
-                activeWorkItem.Status = "failed";
-                activeWorkItem.Result = exception.Message;
+                await store.UpdateClaimAsync(evolution.Id, currentEvent.Id, owner, (saved, entry) =>
+                {
+                    var retry = TransactionalEvolutionStore.IsReadOnlyPhase(entry.Type) && entry.Attempts < 3;
+                    entry.Status = retry ? EvolutionEventStatus.Pending : EvolutionEventStatus.Failed;
+                    entry.Detail = exception is OperationCanceledException ? "Worker interrupted; checkpoint preserved." : exception.Message;
+                    entry.Logs.Add($"{DateTimeOffset.UtcNow:O} Attempt {entry.Attempts}: {entry.Detail}");
+                    entry.CompletedAt = DateTimeOffset.UtcNow;
+                    entry.NotBefore = DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, entry.Attempts * 5));
+                    entry.LeaseOwner = null;
+                    entry.LeaseUntil = null;
+                    if (saved.Status == EvolutionStatus.StopRequested)
+                    {
+                        entry.Status = EvolutionEventStatus.Cancelled;
+                        saved.Status = EvolutionStatus.Stopped;
+                        saved.CompletedAt = DateTimeOffset.UtcNow;
+                    }
+                    else if (!retry) { saved.Status = EvolutionStatus.Failed; saved.Error = entry.Detail; }
+                    else if (saved.Status == EvolutionStatus.PauseRequested) saved.Status = EvolutionStatus.Paused;
+                }, cleanup.Token);
             }
-            evolution.Status = EvolutionStatus.Failed;
-            evolution.Error = exception.Message;
-            evolution.CompletedAt = DateTimeOffset.UtcNow;
-            var persistenceToken = exception is OperationCanceledException && cancellationToken.IsCancellationRequested
-                ? CancellationToken.None
-                : cancellationToken;
-            await store.SaveAsync(evolution, persistenceToken);
+            catch (Exception persistenceError) { logger.LogWarning(persistenceError, "Failure checkpoint will be recovered on lease expiry."); }
+        }
+        finally
+        {
+            await heartbeatStop.CancelAsync();
+            await heartbeat;
+        }
+
+        async Task MaintainLeaseAsync()
+        {
+            try
+            {
+                using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+                while (await timer.WaitForNextTickAsync(heartbeatStop.Token))
+                {
+                    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(heartbeatStop.Token);
+                    deadline.CancelAfter(TimeSpan.FromSeconds(10));
+                    await store.UpdateClaimAsync(evolution.Id, currentEvent.Id, owner,
+                        (_, entry) => entry.LeaseUntil = DateTimeOffset.UtcNow.AddSeconds(TransactionalEvolutionStore.LeaseSeconds), deadline.Token);
+                    await HeartbeatAsync(evolution.Id, deadline.Token);
+                }
+            }
+            catch (OperationCanceledException) when (heartbeatStop.IsCancellationRequested) { }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "Cannot renew lease; cancelling the owned CLI process.");
+                await execution.CancelAsync();
+            }
         }
     }
 
-    private static IEnumerable<string> NextEvents(string eventType) => eventType switch
+    internal static void Complete(Evolution evolution, EvolutionEvent entry, AgentResult result)
     {
-        EvolutionEventTypes.ScanStarted => [EvolutionEventTypes.ScanCompleted, EvolutionEventTypes.PlanStarted],
-        EvolutionEventTypes.PlanStarted => [EvolutionEventTypes.PlanCompleted],
-        EvolutionEventTypes.WorkItemStarted => [EvolutionEventTypes.WorkItemCompleted],
-        EvolutionEventTypes.ReviewStarted => [EvolutionEventTypes.ReviewCompleted, EvolutionEventTypes.GateStarted],
-        EvolutionEventTypes.GateStarted => [EvolutionEventTypes.GateCompleted, EvolutionEventTypes.ChangeMerged],
-        _ => []
-    };
+        if (entry.Type == EvolutionEventTypes.PlanStarted && result.WorkItems.Count == 0)
+            throw new InvalidOperationException("Planning agent returned no valid work items.");
+        if (entry.Type == EvolutionEventTypes.GateStarted && !result.GatePassed)
+            throw new InvalidOperationException("Gate did not return an explicit passing verdict. Publishing is blocked.");
+        entry.Status = EvolutionEventStatus.Completed;
+        entry.Detail = result.Detail;
+        entry.Logs.AddRange(result.Logs);
+        entry.CompletedAt = DateTimeOffset.UtcNow;
+        entry.LeaseOwner = null;
+        entry.LeaseUntil = null;
+        if (entry.Type == EvolutionEventTypes.WorkItemStarted)
+        {
+            var item = evolution.WorkItems.FirstOrDefault(w => w.Cycle == evolution.Cycle && w.Status == "working");
+            if (item is not null) { item.Status = "completed"; item.Result = result.Detail; }
+        }
+        if (evolution.Status == EvolutionStatus.StopRequested)
+        {
+            evolution.Status = EvolutionStatus.Stopped;
+            evolution.CompletedAt = DateTimeOffset.UtcNow;
+            evolution.Events.Add(EvolutionCoordinator.CompletedEvent(EvolutionEventTypes.EvolutionStopped, cycle: evolution.Cycle));
+            return;
+        }
+        if (evolution.Kind == "analysis")
+        {
+            var phases = DataAnalyzer.CreateEvents().Select(e => e.Type).ToArray();
+            var index = Array.IndexOf(phases, entry.Type);
+            if (index == phases.Length - 1)
+            {
+                var recommendation = DataAnalyzer.ParseResult(result.Detail);
+                evolution.Direction = recommendation.Direction;
+                evolution.KeyPoints = recommendation.KeyPoints.ToList();
+                evolution.Status = EvolutionStatus.Completed;
+                evolution.CompletedAt = DateTimeOffset.UtcNow;
+            }
+            else EvolutionCoordinator.Enqueue(evolution, phases[index + 1]);
+        }
+        else switch (entry.Type)
+        {
+            case EvolutionEventTypes.ScanStarted:
+                EvolutionCoordinator.Enqueue(evolution, EvolutionEventTypes.PlanStarted); break;
+            case EvolutionEventTypes.PlanStarted:
+                foreach (var item in result.WorkItems.Take(5)) { item.Cycle = evolution.Cycle; evolution.WorkItems.Add(item); }
+                EvolutionCoordinator.Enqueue(evolution, EvolutionEventTypes.WorkItemStarted); break;
+            case EvolutionEventTypes.WorkItemStarted:
+                EvolutionCoordinator.Enqueue(evolution, evolution.WorkItems.Any(w => w.Cycle == evolution.Cycle && w.Status == "planned")
+                    ? EvolutionEventTypes.WorkItemStarted : EvolutionEventTypes.ReviewStarted); break;
+            case EvolutionEventTypes.ReviewStarted:
+                EvolutionCoordinator.Enqueue(evolution, EvolutionEventTypes.GateStarted); break;
+            case EvolutionEventTypes.GateStarted:
+                EvolutionCoordinator.Enqueue(evolution, EvolutionEventTypes.ChangeMerged);
+                if (evolution.PublishChanges)
+                {
+                    evolution.ApprovalCheckpoint = "publish";
+                    if (evolution.Status != EvolutionStatus.PauseRequested) evolution.Status = EvolutionStatus.AwaitingApproval;
+                }
+                break;
+            case EvolutionEventTypes.ChangeMerged:
+                evolution.Summary = result.Detail;
+                if (evolution.Cycle < evolution.MaxCycles)
+                {
+                    evolution.Cycle++;
+                    evolution.ApprovedCycle = null;
+                    evolution.NextRunAt = DateTimeOffset.UtcNow.AddSeconds(evolution.CycleDelaySeconds);
+                    EvolutionCoordinator.Enqueue(evolution, EvolutionEventTypes.ScanStarted);
+                }
+                else { evolution.Status = EvolutionStatus.Completed; evolution.CompletedAt = DateTimeOffset.UtcNow; }
+                break;
+        }
+        if (evolution.Status == EvolutionStatus.PauseRequested) evolution.Status = EvolutionStatus.Paused;
+    }
 }
 
-public sealed record AgentResult(string Detail, IReadOnlyList<WorkItem> WorkItems, IReadOnlyList<string> Logs);
+public sealed record AgentResult(string Detail, IReadOnlyList<WorkItem> WorkItems, IReadOnlyList<string> Logs, bool GatePassed = false);
 public interface IAgentRunner
 {
     string GetPrompt(Evolution evolution, string eventType);
@@ -157,24 +204,12 @@ public interface IAgentRunner
 
 public sealed class LocalAgentRunner : IAgentRunner
 {
-    public string GetPrompt(Evolution evolution, string eventType) =>
-        $"Local simulation for {eventType}: {evolution.Direction} (scope: {evolution.Scope}).";
-
+    public string GetPrompt(Evolution evolution, string eventType) => $"SIMULATION: {eventType}, cycle {evolution.Cycle}: {evolution.Direction}";
     public Task<AgentResult> RunAsync(Evolution evolution, string eventType, Func<string, CancellationToken, Task>? reportProgress, CancellationToken cancellationToken)
     {
-        IReadOnlyList<WorkItem> workItems = eventType == EvolutionEventTypes.PlanStarted
-            ? [new WorkItem { Title = evolution.Direction, Description = $"Improve {evolution.Scope} in {evolution.RepositoryPath}." }]
-            : [];
-        var detail = eventType switch
-        {
-            EvolutionEventTypes.ScanStarted => $"Scanned scope '{evolution.Scope}'.",
-            EvolutionEventTypes.PlanStarted => $"Planned {workItems.Count} work item(s).",
-            EvolutionEventTypes.WorkItemStarted => "Applied the planned repository change.",
-            EvolutionEventTypes.ReviewStarted => "Reviewed the change against the evolution direction.",
-            EvolutionEventTypes.GateStarted => "Build and test gate passed.",
-            EvolutionEventTypes.ChangeMerged => $"Change is ready for branch '{evolution.TargetBranch}'.",
-            _ => $"Processed {eventType}."
-        };
-        return Task.FromResult(new AgentResult(detail, workItems, [$"Local agent: {detail}"]));
+        cancellationToken.ThrowIfCancellationRequested();
+        IReadOnlyList<WorkItem> items = eventType == EvolutionEventTypes.PlanStarted ? [new() { Title = evolution.Direction, Description = "Simulated work; no repository edits." }] : [];
+        var detail = eventType == "analysis-summary.started" ? """{"direction":"Improve validation","keyPoints":["Simulated analysis"]}""" : $"SIMULATION completed {eventType}; no actual edits, tests or publishing.";
+        return Task.FromResult(new AgentResult(detail, items, [], GatePassed: true));
     }
 }
