@@ -1,32 +1,24 @@
-# React + TypeScript + Vite
+# Code Evolver control console
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + TypeScript + Vite 8. Requires Node.js 22.12 or later.
 
-Currently, two official plugins are available:
+The UI is a disposable control client. It never owns a Copilot process or schedules
+an evolution. Saved jobs are executed by the independent .NET Worker through MySQL.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Development: `npm ci --ignore-scripts`, then `npm run dev` (127.0.0.1:5173).
+- API proxy: `/api` → 127.0.0.1:5278. API and Worker must be started separately.
+- Production build: `npm run build`; launcher copies `dist` into API static content.
+- Validation: `npm run lint`, `npm run build`, `npm audit`.
+- Optional build-time API override: `VITE_API_URL`.
+- Durable E2E: [scripts/verify-durable.mjs](scripts/verify-durable.mjs); see repository
+  [setup and test guide](../../README.md) for the isolated database prerequisites.
 
-## React Compiler
+Console features: persisted dispatch pause/resume, heartbeat status, 1–50 cycle
+budget, individual pause/resume/stop/retry/approval, paged saved evolution list,
+restored analysis history, current-cycle agent roles and searchable/exportable logs.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Real-demo recording uses a dedicated MySQL database, separate Worker and one-cycle
+budget. Set `DEMO_REPOSITORY` to a separate clone and provide the database through
+the local environment. It consumes actual Copilot credits and is not part of the
+simulated durable-service acceptance suite; full narration/CLI recording was not
+rerun during this redesign.

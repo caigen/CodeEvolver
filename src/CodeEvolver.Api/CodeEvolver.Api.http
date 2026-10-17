@@ -1,6 +1,19 @@
 @CodeEvolver.Api_HostAddress = http://localhost:5278
 
-GET {{CodeEvolver.Api_HostAddress}}/weatherforecast/
+GET {{CodeEvolver.Api_HostAddress}}/api/health
 Accept: application/json
 
 ###
+GET {{CodeEvolver.Api_HostAddress}}/api/service
+
+### Pause new dispatch; active phases drain
+POST {{CodeEvolver.Api_HostAddress}}/api/service/control
+Content-Type: application/json
+
+{"paused": true}
+
+### Saved evolution summaries
+GET {{CodeEvolver.Api_HostAddress}}/api/evolutions?summaries=true&offset=0
+
+### Saved analysis history
+GET {{CodeEvolver.Api_HostAddress}}/api/data-analysis

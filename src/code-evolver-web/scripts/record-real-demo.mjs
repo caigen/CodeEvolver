@@ -10,7 +10,7 @@ import { createServer } from 'vite'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const workspace = path.resolve(root, '../..')
-const repository = path.resolve('D:/work/CodeEvolver')
+const repository = path.resolve(process.env.DEMO_REPOSITORY || 'D:/work/CodeEvolver')
 const narration = JSON.parse(await readFile(path.join(root, 'scripts/narration.json'), 'utf8'))
 assert.equal(narration.length, 4, 'Provide four narration sections: purpose, analyzer, evolution, GitHub')
 const args = process.argv.slice(2)
@@ -22,6 +22,7 @@ const viewport = { width: 1920, height: 960 }
 const scenes = []
 const browserErrors = []
 let api
+let worker
 let apiUrl
 let server
 let browser
@@ -54,6 +55,8 @@ async function getJson(route) {
 }
 
 async function startApi() {
+  assert.ok(process.env.ConnectionStrings__CodeEvolver, 'Configure a dedicated demo MySQL database via ConnectionStrings__CodeEvolver; do not use production.')
+  assert.notEqual(repository, workspace, 'Use a separate demo clone, not the running service source checkout.')
   const dll = path.join(workspace, 'src/CodeEvolver.Api/bin/Debug/net10.0/CodeEvolver.Api.dll')
   const contentRoot = path.join(output, 'api')
   await mkdir(contentRoot, { recursive: true })
@@ -62,7 +65,7 @@ async function startApi() {
     api = spawn('dotnet', [dll, '--contentRoot', contentRoot, '--urls', 'http://127.0.0.1:0'], {
       cwd: contentRoot, windowsHide: true,
       env: {
-        ...process.env, ASPNETCORE_ENVIRONMENT: 'Production', Storage__Provider: 'json',
+        ...process.env, ASPNETCORE_ENVIRONMENT: 'Production', Storage__Provider: 'mysql',
         Agent__Provider: 'copilot', Agent__Copilot__PublishChanges: 'false',
         Agent__Copilot__Executable: process.env.DEMO_COPILOT_EXECUTABLE || 'copilot.exe',
         Agent__Copilot__ReadOnly: 'false', Agent__Copilot__MaxAiCredits: '30',
@@ -82,12 +85,21 @@ async function startApi() {
     api.once('exit', (code) => { clearTimeout(timeout); reject(new Error(`API stopped: ${code}\n${logs.slice(-6000)}`)) })
   })
   assert.equal((await getJson('health')).agent, 'copilot')
-  console.log(`Real API ready: ${apiUrl}; publishing disabled; isolated state: ${contentRoot}`)
+  worker = spawn('dotnet', [path.join(workspace, 'src/CodeEvolver.Worker/bin/Debug/net10.0/CodeEvolver.Worker.dll')], {
+    cwd: workspace, windowsHide: true,
+    env: { ...process.env, Storage__Provider: 'mysql', Agent__Provider: 'copilot', Agent__Copilot__PublishChanges: 'false',
+      Agent__Copilot__Executable: process.env.DEMO_COPILOT_EXECUTABLE || 'copilot.exe', Agent__Copilot__MaxAiCredits: '30',
+      Agent__Copilot__TimeoutMinutes: '15', Agent__Copilot__ReadOnly: 'false' },
+  })
+  worker.stdout.on('data', data => process.stdout.write(data))
+  worker.stderr.on('data', data => process.stderr.write(data))
+  worker.on('error', error => console.error(error.message))
+  console.log(`Real API and independent Worker ready: ${apiUrl}; publishing disabled; use a dedicated demo database.`)
 }
 
 async function record() {
   await startApi()
-  server = await createServer({ root, server: { host: '127.0.0.1', port: 0, open: false, hmr: false }, define: { 'import.meta.env.VITE_API_URL': JSON.stringify(`${apiUrl}/api`) } })
+  server = await createServer({ root, server: { host: '127.0.0.1', port: 5173, strictPort: true, open: false, hmr: false }, define: { 'import.meta.env.VITE_API_URL': JSON.stringify(`${apiUrl}/api`) } })
   await server.listen()
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`
   browser = await chromium.launch({ headless: true })
@@ -112,6 +124,7 @@ async function record() {
   await scene(narration[0].title, narration[0].text)
   await scene(narration[1].title, narration[1].text, page.getByRole('heading', { name: 'Analyzer Team', exact: true }))
   await page.getByLabel('Evolution direction').fill('Fix a user-flow bug and improve the experience in the analyzer-to-evolution journey.')
+  await page.getByLabel('Cycle budget (1–50)').fill('1')
   await page.getByLabel('Scope Path', { exact: true }).fill('src/code-evolver-web/src')
   await page.getByLabel('Custom target branch', { exact: true }).fill('main')
   const previewResponse = page.waitForResponse((reply) => reply.url() === `${apiUrl}/api/evolutions` && reply.request().method() === 'POST')
@@ -149,6 +162,7 @@ async function record() {
     'Final reporting must state exactly what changed and what validation actually ran. Publishing is disabled.',
   ].join('\n\n')
   await page.getByLabel('Evolution direction').fill(direction)
+  await page.getByLabel('Cycle budget (1–50)').fill('1')
   await page.getByLabel('Scope Path', { exact: true }).fill('src/code-evolver-web/src')
   await page.getByLabel('Custom target branch', { exact: true }).fill('main')
   const createResponse = page.waitForResponse((reply) => reply.url() === `${apiUrl}/api/evolutions` && reply.request().method() === 'POST')
@@ -181,7 +195,7 @@ async function record() {
   await scene(`Actual outcome | ${outcome.status}`, outcome.status === 'completed'
     ? 'The real evolution has completed. Review the actual work items and event history. Changes remain uncommitted in the working tree. No commit, push, or pull request was performed.'
     : 'The real evolution did not complete successfully. The recorded status and saved event history describe the failure. This recording does not claim successful implementation.', page.getByRole('heading', { name: 'Agent team', exact: true }))
-  await scene('Code Evolver Agent Team | Work item and validation result', 'The day plan records the work item and its reported result. Review this alongside the event timeline to see what the agents actually changed and which checks they performed.', page.getByRole('heading', { name: 'Agent day plan', exact: true }))
+  await scene('Code Evolver Agent Team | Work item and validation result', 'The cycle history records the work item and its reported result. Review this alongside the event timeline to see what the agents actually changed and which checks they performed.', page.getByRole('heading', { name: 'Cycle work history', exact: true }))
   await page.setContent(`<!doctype html><html lang="en"><head><title>Code Evolver</title></head><body style="margin:0;background:#eeeef2;color:#1e1e1e;font-family:Segoe UI,sans-serif"><main style="padding:180px 150px"><h1 style="font-size:72px">Code Evolver</h1><p style="font-size:28px">Your direction. Your data. Your next repository improvement.</p><a style="font-size:40px;color:#007acc" href="${projectUrl}">${projectUrl}</a></main></body></html>`)
   await scene(narration[3].title, narration[3].text)
   await context.close()
@@ -327,5 +341,6 @@ try {
   await context?.close().catch(() => {})
   await browser?.close().catch(() => {})
   await server?.close()
+  if (worker && worker.exitCode === null) await run('taskkill', ['/PID', String(worker.pid), '/T', '/F']).catch(() => {})
   if (api && api.exitCode === null) await run('taskkill', ['/PID', String(api.pid), '/T', '/F']).catch(() => {})
 }
