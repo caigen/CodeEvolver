@@ -72,7 +72,7 @@ public sealed class EventMonitor(IEvolutionStore store, IAgentRunner agentRunner
             {
                 await store.UpdateClaimAsync(evolution.Id, currentEvent.Id, owner, (saved, entry) =>
                 {
-                    var retry = TransactionalEvolutionStore.IsReadOnlyPhase(entry.Type) && entry.Attempts < 3;
+                    var retry = exception is not AgentSafetyException && TransactionalEvolutionStore.IsReadOnlyPhase(entry.Type) && entry.Attempts < 3;
                     entry.Status = retry ? EvolutionEventStatus.Pending : EvolutionEventStatus.Failed;
                     entry.Detail = exception is OperationCanceledException ? "Worker interrupted; checkpoint preserved." : exception.Message;
                     entry.Logs.Add($"{DateTimeOffset.UtcNow:O} Attempt {entry.Attempts}: {entry.Detail}");

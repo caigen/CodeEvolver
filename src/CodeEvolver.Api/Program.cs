@@ -124,9 +124,11 @@ app.MapGet("/api/evolutions/{id:guid}", async (Guid id, IEvolutionStore store, C
     var evolution = await store.GetAsync(id, cancellationToken);
     return evolution is null ? Results.NotFound() : Results.Ok(evolution);
 });
-app.MapPost("/api/evolutions", async (CreateEvolutionRequest request, EvolutionCoordinator coordinator, CancellationToken cancellationToken) =>
+app.MapPost("/api/evolutions", async (CreateEvolutionRequest request, EvolutionCoordinator coordinator, IConfiguration configuration, CancellationToken cancellationToken) =>
 {
     var errors = request.Validate();
+    if (request.PublishChanges && !configuration.GetValue("Agent:Copilot:PublishChanges", false))
+        errors[nameof(request.PublishChanges)] = ["Publishing is disabled by host policy."];
     if (errors.Count > 0)
     {
         return Results.ValidationProblem(errors);
@@ -135,9 +137,11 @@ app.MapPost("/api/evolutions", async (CreateEvolutionRequest request, EvolutionC
     var evolution = await coordinator.CreateAsync(request, cancellationToken);
     return Results.Created($"/api/evolutions/{evolution.Id}", evolution);
 });
-app.MapPut("/api/evolutions/{id:guid}", async (Guid id, CreateEvolutionRequest request, IEvolutionStore store, EvolutionCoordinator coordinator, CancellationToken cancellationToken) =>
+app.MapPut("/api/evolutions/{id:guid}", async (Guid id, CreateEvolutionRequest request, IEvolutionStore store, EvolutionCoordinator coordinator, IConfiguration configuration, CancellationToken cancellationToken) =>
 {
     var errors = request.Validate();
+    if (request.PublishChanges && !configuration.GetValue("Agent:Copilot:PublishChanges", false))
+        errors[nameof(request.PublishChanges)] = ["Publishing is disabled by host policy."];
     if (errors.Count > 0) return Results.ValidationProblem(errors);
     var existing = await store.GetAsync(id, cancellationToken);
     if (existing is null) return Results.NotFound();

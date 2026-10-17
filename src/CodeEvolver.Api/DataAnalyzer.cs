@@ -8,7 +8,8 @@ namespace CodeEvolver.Api;
 public sealed record DataAnalysisResult(string Direction, IReadOnlyList<string> KeyPoints);
 public enum DataAnalysisStatus { Running, Completed, Failed }
 
-public sealed class DataAnalysisRun
+/// <summary>Persisted analysis progress returned to the control console.</summary>
+public sealed record DataAnalysisRun
 {
     public Guid Id { get; init; } = Guid.NewGuid();
     public required string FileName { get; init; }

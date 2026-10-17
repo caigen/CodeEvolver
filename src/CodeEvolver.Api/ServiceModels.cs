@@ -21,6 +21,7 @@ public sealed record ServiceResponse(bool DispatchPaused, bool WorkerOnline, IRe
 
 public sealed class StoreConflictException(string message) : Exception(message);
 public sealed class LeaseLostException() : Exception("The phase lease expired or belongs to another worker.");
+public sealed class AgentSafetyException(string message) : Exception(message);
 
 public sealed class StoreState
 {

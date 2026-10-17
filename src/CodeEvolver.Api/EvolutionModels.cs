@@ -34,7 +34,6 @@ public sealed class Evolution
     public bool PublishChanges { get; set; }
     public int? ApprovedCycle { get; set; }
     public string? ApprovalCheckpoint { get; set; }
-    public string? ResumeCheckpoint { get; set; }
     public DateTimeOffset? NextRunAt { get; set; }
     public required string RepositoryPath { get; set; }
     public required string Direction { get; set; }

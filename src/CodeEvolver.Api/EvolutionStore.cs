@@ -72,7 +72,7 @@ public interface IEvolutionStore
         {
             var evolution = state.Evolutions.SingleOrDefault(e => e.Id == id) ?? throw new LeaseLostException();
             var entry = evolution.Events.SingleOrDefault(e => e.Id == eventId);
-            if (entry is null || entry.Status != EvolutionEventStatus.Processing || entry.LeaseOwner != owner || entry.LeaseUntil <= DateTimeOffset.UtcNow)
+            if (entry is null || entry.Status != EvolutionEventStatus.Processing || entry.LeaseOwner != owner || entry.LeaseUntil is null || entry.LeaseUntil <= DateTimeOffset.UtcNow)
                 throw new LeaseLostException();
             mutation(evolution, entry);
             Touch(evolution);
@@ -95,6 +95,7 @@ public interface IEvolutionStore
                         entry.Logs.Add($"{now:O} {entry.Detail}");
                         entry.LeaseOwner = null;
                         entry.LeaseUntil = null;
+                        entry.NotBefore = now.AddSeconds(Math.Min(60, Math.Max(1, entry.Attempts) * 5));
                         if (evolution.Status == EvolutionStatus.StopRequested)
                         {
                             entry.Status = EvolutionEventStatus.Cancelled;
