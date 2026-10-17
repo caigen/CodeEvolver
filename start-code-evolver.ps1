@@ -1,70 +1,78 @@
 [CmdletBinding()]
 param(
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$NoWorker,
+    [switch]$Simulate,
+    [string]$DotnetPath = 'dotnet'
 )
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
-$npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-
-if (-not $dotnet) {
-    throw '.NET 10 SDK is required. Install it and ensure dotnet is available on PATH.'
+if (-not $env:ConnectionStrings__CodeEvolver) {
+    throw 'Set ConnectionStrings__CodeEvolver in this terminal to your local MySQL database. Credentials are never written by this launcher.'
 }
-
-if (-not $npm) {
-    throw 'Node.js 22 or newer and npm are required. Install them and ensure npm is available on PATH.'
-}
+$dotnet = (Get-Command $DotnetPath -ErrorAction Stop).Source
+$env:DOTNET_ROOT = Split-Path $dotnet
+if ($Simulate) { $env:Agent__Provider = 'local' } else { $env:Agent__Provider = 'copilot' }
+$runtime = Join-Path $root '.runtime'
+New-Item -ItemType Directory -Path $runtime -Force | Out-Null
 
 function Test-Endpoint([string]$Uri) {
+    try { return (Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 2).StatusCode -eq 200 }
+    catch { return $false }
+}
+
+if (-not (Test-Endpoint 'http://127.0.0.1:5278/api/health')) {
+    Push-Location (Join-Path $root 'src\code-evolver-web')
     try {
-        return (Invoke-WebRequest -Uri $Uri -TimeoutSec 1).StatusCode -eq 200
+        & npm.cmd ci --ignore-scripts
+        if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency restore failed.' }
+        & npm.cmd run build
+        if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed. Node 22.12+ is required.' }
+    } finally { Pop-Location }
+    & $dotnet publish (Join-Path $root 'src\CodeEvolver.Api') -c Release -o (Join-Path $runtime 'api')
+    if ($LASTEXITCODE -ne 0) { throw 'API publish failed.' }
+    New-Item -ItemType Directory -Path (Join-Path $runtime 'api\wwwroot') -Force | Out-Null
+    Copy-Item (Join-Path $root 'src\code-evolver-web\dist\*') (Join-Path $runtime 'api\wwwroot') -Recurse -Force
+    $api = Start-Process -FilePath (Join-Path $runtime 'api\CodeEvolver.Api.exe') -ArgumentList '--urls', 'http://127.0.0.1:5278' -WorkingDirectory (Join-Path $runtime 'api') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtime 'api.log') -RedirectStandardError (Join-Path $runtime 'api-error.log') -PassThru
+    $api.Id | Set-Content (Join-Path $runtime 'api.pid')
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    while (-not (Test-Endpoint 'http://127.0.0.1:5278/api/health')) {
+        if ($api.HasExited -or [DateTime]::UtcNow -gt $deadline) { throw 'API did not become ready. Check .runtime/api-error.log and MySQL configuration.' }
+        Start-Sleep -Milliseconds 500
     }
-    catch {
-        return $false
+}
+
+if (-not $NoWorker) {
+    $state = Invoke-RestMethod 'http://127.0.0.1:5278/api/service'
+    if (-not $state.workerOnline) {
+        $installed = Get-Service 'CodeEvolver.Worker' -ErrorAction SilentlyContinue
+        if ($installed) {
+            if ($installed.Status -ne 'Running') { throw 'The installed Worker is stopped. Start it from Windows Services with appropriate privileges.' }
+            Write-Host 'Installed Worker is running; waiting for its next heartbeat.'
+        } else {
+            $pidPath = Join-Path $runtime 'worker.pid'
+            $existingWorker = $null
+            if (Test-Path $pidPath) {
+                $candidate = Get-Process -Id ([int](Get-Content $pidPath)) -ErrorAction SilentlyContinue
+                if ($candidate -and $candidate.Path -eq (Join-Path $runtime 'worker\CodeEvolver.Worker.exe')) { $existingWorker = $candidate }
+            }
+            if (-not $existingWorker) {
+                & $dotnet publish (Join-Path $root 'src\CodeEvolver.Worker') -c Release -o (Join-Path $runtime 'worker')
+                if ($LASTEXITCODE -ne 0) { throw 'Worker publish failed.' }
+                $worker = Start-Process -FilePath (Join-Path $runtime 'worker\CodeEvolver.Worker.exe') -WorkingDirectory (Join-Path $runtime 'worker') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtime 'worker.log') -RedirectStandardError (Join-Path $runtime 'worker-error.log') -PassThru
+                $worker.Id | Set-Content $pidPath
+                Write-Host "Detached Worker PID $($worker.Id). Install as a Windows service for reboot/logoff survival."
+            }
+        }
     }
+    $workerDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $state = Invoke-RestMethod 'http://127.0.0.1:5278/api/service'
+        if ($state.workerOnline) { break }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $workerDeadline)
+    if (-not $state.workerOnline) { Write-Warning 'Worker heartbeat not detected. Commands are saved, but check .runtime/worker-error.log or the Windows Service account configuration.' }
 }
-
-$apiReady = Test-Endpoint 'http://localhost:5278/api/health'
-$webReady = Test-Endpoint 'http://localhost:5173'
-if ($apiReady -and $webReady) {
-    Write-Host 'Code Evolver is already running at http://localhost:5173.' -ForegroundColor Green
-    if (-not $NoBrowser) { Start-Process 'http://localhost:5173' }
-    return
-}
-if ($apiReady -or $webReady) {
-    throw 'Only part of Code Evolver is already running. Stop the process using port 5278 or 5173, then run this script again.'
-}
-
-Write-Host 'Starting Code Evolver API at http://localhost:5278...'
-$apiProcess = Start-Process -FilePath $dotnet.Source `
-    -ArgumentList 'run', '--project', '.\src\CodeEvolver.Api' `
-    -WorkingDirectory $root `
-    -PassThru
-
-Write-Host 'Starting Code Evolver web app at http://localhost:5173...'
-$webProcess = Start-Process -FilePath $npm.Source `
-    -ArgumentList 'run', 'dev', '--prefix', '.\src\code-evolver-web' `
-    -WorkingDirectory $root `
-    -PassThru
-
-$ready = $false
-for ($attempt = 0; $attempt -lt 60; $attempt++) {
-    if ($apiProcess.HasExited) { throw "The API exited with code $($apiProcess.ExitCode)." }
-    if ($webProcess.HasExited) { throw "The web app exited with code $($webProcess.ExitCode)." }
-
-    if ((Test-Endpoint 'http://localhost:5278/api/health') -and (Test-Endpoint 'http://localhost:5173')) {
-        $ready = $true
-        break
-    }
-    Start-Sleep -Milliseconds 500
-}
-
-if (-not $ready) {
-    throw 'The web app did not become ready within 30 seconds. Check the API and web process windows for errors.'
-}
-
-Write-Host 'Code Evolver is ready. Close the API and web process windows to stop it.' -ForegroundColor Green
-if (-not $NoBrowser) {
-    Start-Process 'http://localhost:5173'
-}
+Write-Host 'Control UI: http://127.0.0.1:5278. Closing the browser or this launcher does not stop the Worker.' -ForegroundColor Green
+if (-not $NoBrowser) { Start-Process 'http://127.0.0.1:5278' }
